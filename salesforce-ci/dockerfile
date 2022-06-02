@@ -1,0 +1,63 @@
+# See here for image contents: https://github.com/microsoft/vscode-dev-containers/tree/v0.224.2/containers/ubuntu/.devcontainer/base.Dockerfile
+
+# [Choice] Ubuntu version (use hirsuite or bionic on local arm64/Apple Silicon): hirsute, focal, bionic
+#ARG VARIANT="hirsute"
+#FROM mcr.microsoft.com/vscode/devcontainers/base:0-${VARIANT}
+ARG NODE_VERSION=16
+FROM ubuntu:20.04
+
+# [Optional] Uncomment this section to install additional OS packages.
+# RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
+#     && apt-get -y install --no-install-recommends <your-package-list-here>
+
+# Install ant and wget to install Salesforce CLI
+RUN apt-get update && \
+    apt-get install -y ant && \
+    apt-get install -y xz-utils && \
+    apt-get install -y wget && \
+    apt-get install -y git &&  \
+    apt install -y jq &&  \
+    rm -rf /var/lib/apt/lists/*
+
+# Install latest Node.js
+# https://gist.github.com/isaacs/579814#file-node-and-npm-in-30-seconds-sh
+RUN mkdir ~/node-latest-install && cd $_ && \
+    apt-get update -y && \
+    apt-get upgrade -y && \
+    apt-get install -y && \
+    curl -sL https://deb.nodesource.com/setup_14.x | bash - && \
+    apt-get install -y nodejs
+
+# Install PowerShell and their dependencies
+RUN apt-get install -y wget apt-transport-https software-properties-common && \
+    wget -q https://packages.microsoft.com/config/ubuntu/20.04/packages-microsoft-prod.deb && \
+    dpkg -i packages-microsoft-prod.deb && \
+    apt-get update && \
+    apt-get install -y powershell
+
+# Install NPM
+RUN apt-get update && apt-get install -y \
+    software-properties-common \
+    npm
+RUN npm install npm@latest -g && \
+    npm install n -g && \
+    n latest
+RUN node -v && \
+    npm -v
+
+# Install eslint dependencies
+WORKDIR /usr/app
+COPY ./ /usr/app
+RUN echo 'y' | npm install eslint @babel/core @babel/eslint-parser @lwc/eslint-plugin-lwc --save-dev
+
+# Install Salesforce CLI and Other SFDX Plugins
+RUN wget https://developer.salesforce.com/media/salesforce-cli/sfdx-linux-amd64.tar.xz && \
+    mkdir sfdx && \
+    tar xJf sfdx-linux-amd64.tar.xz -C sfdx --strip-components 1 && \
+    ./sfdx/install && \
+    sfdx plugins:update && \
+    sfdx update && \
+    echo 'y' | sfdx plugins:install @salesforce/sfdx-scanner && \
+    echo 'y' | sfdx plugins:install sfdx-git-delta@latest && \
+    echo 'y' | sfdx plugins:install lightning-flow-scanner && \
+    sfdx --version

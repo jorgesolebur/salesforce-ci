@@ -1,0 +1,111 @@
+# This workflow is supposed to be scheduled (daily)
+# This workflow will do the following actions in QA sandbox (sprintst)
+# - Run Local Test Classes and create in Tracker a Run Tests Records with the summary of the run
+# - Do a full deployment in target sandbox
+
+name: SCHEDULED_BATCH
+
+# Set your workflow to run every day at 6pm (2am SG time)
+on:
+  schedule:
+  - cron: "0 18 * * 1-5"
+
+  # Allows you to run this workflow manually from the Actions tab
+  #workflow_dispatch:
+
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+jobs:
+
+  FULL_DEPLOYMENT_SPRINTST:
+    environment: QA
+    runs-on: ubuntu-latest
+    container:
+      image: jorgesolebur/salesforce-ci:7.150
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v3
+        with: 
+          ref: 'develop'
+          fetch-depth: '1'
+
+      # Replaces placeholders in the metadata with the value from the property file for the right environment
+      - name: Replaces placeholder in the files with the property files from the right environment
+        run: |
+          ant prepare -Dsf.env=QA
+
+      #Authentication to Target org
+      - name: Write the token into a file and authenticate to Target Org
+        run: |
+          export HOME=/root
+          echo ${{ secrets.SPRINTST }} > sprintst.txt         
+          sfdx force:auth:sfdxurl:store -f sprintst.txt -a sprintstOrg -s
+
+      #Creates a record in Tracker with details of the test class ran
+      - name: 'Full Deployment into SPRINTST'
+        run: |
+          export HOME=/root
+          sfdx force:source:deploy -p force-app/main/default -l NoTestRun -w 100 -u sprintstOrg
+
+  RUN_ALL_LOCAL_TESTS_IN_SPRINTST:
+    if: ${{ always() }}
+    needs: [FULL_DEPLOYMENT_SPRINTST]
+    environment: QA
+    runs-on: ubuntu-latest
+    container:
+      image: jorgesolebur/salesforce-ci:7.150
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v3
+
+      #Authentication to Target org
+      - name: Write the token into a file and authenticate to Target Org
+        run: |
+          export HOME=/root
+          echo ${{ secrets.SPRINTST }} > sprintst.txt         
+          sfdx force:auth:sfdxurl:store -f sprintst.txt -a sprintstOrg -s
+
+      #Run all local test in target sandbox
+      - name: Run all local test in target sandbox
+        continue-on-error: true
+        run:  |
+          export HOME=/root
+          sfdx force:apex:test:run --json -r json -l RunLocalTests --codecoverage -w 60 -u sprintstOrg >> result.json
+
+      #Creates a record in Tracker with details of the test class ran
+      - name: Create a Summary Test Run Results record in Tracker
+        run: |
+          export HOME=/root
+          echo ${{ secrets.TRACKER }} > tracker.txt         
+          sfdx force:auth:sfdxurl:store -f tracker.txt -a trackerOrg
+          sfdx force:data:record:create -v "$(echo "TR_Total_Lines__c=")$(jq '.result.coverage.summary.totalLines' result.json) $(echo "TR_Covered_Lines__c=")$(jq '.result.coverage.summary.coveredLines' result.json) $(echo "TR_Org_Wide_Coverage__c=")$(jq '.result.coverage.summary.orgWideCoverage' result.json | tr -d %) $(echo "TR_Test_Run_Coverage__c=")$(jq '.result.coverage.summary.testRunCoverage' result.json | tr -d %) $(echo "TR_Outcome__c=")$(jq '.result.summary.outcome' result.json) $(echo "TR_Tests_Ran__c=")$(jq '.result.summary.testsRan' result.json) $(echo "TR_Passing_Tests__c=")$(jq '.result.summary.passing' result.json) $(echo "TR_Failing_Tests__c=")$(jq '.result.summary.failing' result.json) $(echo "TR_Skipped_Tests__c=")$(jq '.result.summary.skipped' result.json) $(echo "TR_Test_Execution_Time__c=")$(jq '.result.summary.testExecutionTime' result.json | tr -d ' ms') $(echo "TR_Org_ID__c=")$(jq '.result.summary.orgId' result.json)" -s TR_Apex_Test_Run_Result__c -u trackerOrg
+
+  RUN_ALL_LOCAL_TESTS_IN_TEST:
+    environment: TEST
+    runs-on: ubuntu-latest
+    container:
+      image: jorgesolebur/salesforce-ci:7.150
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v3
+
+      #Authentication to Target org
+      - name: Write the token into a file and authenticate to Target Org
+        run: |
+          export HOME=/root
+          echo ${{ secrets.TEST }} > test.txt         
+          sfdx force:auth:sfdxurl:store -f test.txt -a test -s
+
+      #Run all local test in target sandbox
+      - name: Run all local test in target sandbox
+        continue-on-error: true
+        run:  |
+          export HOME=/root
+          sfdx force:apex:test:run --json -r json -l RunLocalTests --codecoverage -w 60 -u test >> result.json
+
+      #Creates a record in Tracker with details of the test class ran
+      - name: Create a Summary Test Run Results record in Tracker
+        run: |
+          export HOME=/root
+          echo ${{ secrets.TRACKER }} > tracker.txt         
+          sfdx force:auth:sfdxurl:store -f tracker.txt -a trackerOrg
+          sfdx force:data:record:create -v "$(echo "TR_Total_Lines__c=")$(jq '.result.coverage.summary.totalLines' result.json) $(echo "TR_Covered_Lines__c=")$(jq '.result.coverage.summary.coveredLines' result.json) $(echo "TR_Org_Wide_Coverage__c=")$(jq '.result.coverage.summary.orgWideCoverage' result.json | tr -d %) $(echo "TR_Test_Run_Coverage__c=")$(jq '.result.coverage.summary.testRunCoverage' result.json | tr -d %) $(echo "TR_Outcome__c=")$(jq '.result.summary.outcome' result.json) $(echo "TR_Tests_Ran__c=")$(jq '.result.summary.testsRan' result.json) $(echo "TR_Passing_Tests__c=")$(jq '.result.summary.passing' result.json) $(echo "TR_Failing_Tests__c=")$(jq '.result.summary.failing' result.json) $(echo "TR_Skipped_Tests__c=")$(jq '.result.summary.skipped' result.json) $(echo "TR_Test_Execution_Time__c=")$(jq '.result.summary.testExecutionTime' result.json | tr -d ' ms') $(echo "TR_Org_ID__c=")$(jq '.result.summary.orgId' result.json)" -s TR_Apex_Test_Run_Result__c -u trackerOrg
