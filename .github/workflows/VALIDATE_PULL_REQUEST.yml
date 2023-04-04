@@ -2,12 +2,12 @@
 
 name: VALIDATE_PULL_REQUEST
 
-# Controls when the action will run. 
+# Controls when the action will run.
 on:
   # Triggers the workflow on push or pull request events but only for the develop branch
   pull_request:
     types: [opened, synchronize, reopened]
-    branches: [ develop ]
+    branches: [develop]
 
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
@@ -19,11 +19,10 @@ jobs:
     # The type of runner that the job will run on
     runs-on: ubuntu-latest
     container:
-      image: jorgesolebur/salesforce-ci:7.150
+      image: jorgesolebur/salesforce-ci:latest
 
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
-
       - uses: actions/checkout@v3
 
       # CHeckout from GIT. We checkout both HEAD and BASE branches to generate DELTA
@@ -41,13 +40,14 @@ jobs:
       - name: Run sfdx git delta and creates delta
         run: |
           export HOME=/root
-          pwsh -c 'sfdx sgd:source:delta --to ${{ github.HEAD_REF }} --from $(git merge-base ${{ github.HEAD_REF }} ${{ github.BASE_REF }}) -s force-app --output .'
+          mkdir force-app-delta
+          pwsh -c 'sfdx sgd:source:delta --to ${{ github.HEAD_REF }} --from $(git merge-base ${{ github.HEAD_REF }} ${{ github.BASE_REF }}) -s force-app --generate-delta --output ./force-app-delta/'
       - name: Show package to deploy
         run: |
-          cat package/package.xml
+          cat force-app-delta/package/package.xml
       - name: Show package to destroy
         run: |
-          cat destructiveChanges/destructiveChanges.xml
+          cat force-app-delta/destructiveChanges/destructiveChanges.xml
 
       # Replaces placeholders in the metadata with the value from the property file for the right environment and creates folder /deploy with all the components with replaced placeholders. THe folder /force-app contains same as /deploy
       - name: Replaces placeholders in the files with the property file variable values from the right environment
@@ -63,27 +63,27 @@ jobs:
           export HOME=/root
           sfdx scanner:rule:add --language xml --path "./scripts/pmd/category/xml/xml_custom_rules.xml"
           sfdx scanner:rule:add --language apex --path "./scripts/pmd/category/apex/apex_custom_rules.xml"
-          echo "List of custom and standard rules used in Kia : "
+          echo "List of custom and standard rules used for NCS : "
           sfdx scanner:rule:list
           sed -i -e 's+"!\*\*/\*-meta.xml"+"\*\*/\*-meta.xml"+g' ~/.sfdx-scanner/Config.json
           echo "Executing PMD Scan now : "
           pwsh -c 'sfdx scanner:run  --target "./force-app/" --pmdconfig “./scripts/pmd/rulesets/critical_scan.xml” --severity-threshold "1" --engine "pmd"'
-          
+
       # Runs Flow Scan. This task will fail if there is any rule that is violated
       # We should accept flow scanner because it is not trusted by default
       - name: Salesforce Flow Scan. This step will FAIL if there is any critical violation of governor limits hitted in Flows
         run: |
           export HOME=/root
           pwsh -c 'sfdx flow:scan -d "./force-app/"'
-      
+
       # Runs ESLint rules. This task will fail if there is any rule that is violated.
       - name: LWC Best Practices scanning using ESLint. This step will FAIL if there is any critical coding standards not met
-        run: | 
+        run: |
           export HOME=/root
           pwsh -c 'npm dedupe'
           echo "Executing ESLint Scan now : " 
           pwsh -c 'sfdx scanner:run  --target "./force-app/**/*.js" --eslintconfig "./scripts/eslint/.eslintrc.json" --severity-threshold "1" --engine "eslint-lwc"'
-      
+
       #Authentication to Target org
       - name: Write the token into a file and authenticate to Target Org
         run: |
@@ -91,15 +91,34 @@ jobs:
           echo ${{ secrets.SPRINTST }} > token.txt         
           sfdx force:auth:sfdxurl:store -f token.txt -a myOrg -s
 
-      # Delta Validation to target Org 
-      - name: Delta Validation WITHOUT Destructive Changes without running test classes. Errors are inside the JSON node "result.details.componentFailures" for component failure
-        run:  |
+      # Delta Validation to target Org. If changes are related with Apex classes or flows then we execute test classes. Errors are inside the JSON node "result.details.componentFailures" for component failure
+      - name: Delta Validation to target Org. If changes are related with Apex classes or flows then we execute test classes. Errors are inside the JSON node "result.details.componentFailures" for component failure
+        run: |
           export HOME=/root
-          sfdx force:source:deploy --ignorewarnings --manifest package/package.xml -l NoTestRun -w 100 --checkonly -u myOrg --json
+          if [ $(cat force-app-delta/package/package.xml | wc -l) -gt 4 ];then
+            if [ $(egrep 'name>ApexClass|name>Apextrigger|name>Flow' force-app-delta/package/package.xml | wc -l) -gt 1 ];then
+              echo "Deploying Delta and not running Apex tests"
+              sfdx force:source:deploy --ignorewarnings --manifest "./force-app-delta/package/package.xml" -l NoTestRun -w 100 --checkonly -u myOrg --json
+            else 
+              echo "Deploying Delta and Runing all Local Tests since this changes introduces updates in Apex Classes and Flows"
+              sfdx force:source:deploy --ignorewarnings --manifest "./force-app-delta/package/package.xml" -l RunLocalTests -w 100 --checkonly -u myOrg --json
+            fi
+            if [ $? -ne 0 ]; then
+              echo "SF - deployment Failed"
+              exit 1
+            fi   
+          else
+                echo "No SF changes found. Deployment skipped"
+          fi
 
-      # Delta Validation to target Org 
+      # Delta Validation to target Org
       - name: Delta Validation to target Org + Destructive changes without running test classes. If this tep FAILS job is still success
         continue-on-error: true
-        run:  | 
+        run: |
           export HOME=/root
-          sfdx force:source:deploy --ignorewarnings --manifest  "./package/package.xml" --postdestructivechanges "./destructiveChanges/destructiveChanges.xml" -l NoTestRun -w 100 -c -u myOrg --json
+          if grep -q '<types>' ./force-app-delta/destructiveChanges/destructiveChanges.xml ; then
+             echo "Removing the below components: \n `cat force-app-delta/destructiveChanges/destructiveChanges.xml`"
+             sfdx force:source:deploy --ignorewarnings --manifest  "./force-app-delta/package/package.xml" --postdestructivechanges "./force-app-delta/destructiveChanges/destructiveChanges.xml" -l NoTestRun -w 100 -c -u myOrg --json
+          else
+             echo "No destructive changes found"
+          fi

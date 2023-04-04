@@ -1,0 +1,132 @@
+# Starter pipeline
+# This pipeline should be triggered automatically when pull requests are created against developer branch
+trigger: none
+
+pool:
+  vmImage: ubuntu-latest
+
+jobs:
+  - job: VALIDATE_PULL_REQUEST
+    displayName: VALIDATE PULL REQUEST
+    container: jorgesolebur/salesforce-ci:latest
+    timeoutInMinutes: 180
+
+    variables:
+      - name: orgName
+        value: jorgesolebur
+
+    steps:
+      # Installing plugins for the running user
+      - script: |
+          echo "y" | sfdx plugins:install @salesforce/sfdx-scanner
+          echo "y" | sfdx plugins:install sfdx-git-delta
+          echo "y" | sfdx plugins:install lightning-flow-scanner
+        displayName: "Install tools on running user"
+        continueOnError: false
+
+        # CHeckout from GIT. We checkout both HEAD and BASE branches to generate DELTA
+      - script: |
+          echo "git config --global --add safe.directory " $(Pipeline.Workspace)
+          git config --global --add safe.directory $(Pipeline.Workspace)
+          echo "git config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'"
+          git config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+
+          echo "git pull branches " $RepoURL
+          git pull $RepoURL $(System.PullRequest.TargetBranch):$(System.PullRequest.TargetBranch)
+          git pull $RepoURL $(System.PullRequest.SourceBranch):$(System.PullRequest.SourceBranch)
+
+          echo "TARGET_BRANCH = BASE_BRANCH = " $(System.PullRequest.TargetBranch)
+          git checkout $(System.PullRequest.TargetBranch)
+          echo "SOURCE_BRANCH = HEAD_BRANCH = " $(System.PullRequest.SourceBranch)
+          git checkout $(System.PullRequest.SourceBranch)
+        env:
+          RepoURL: https://$(System.AccessToken)@dev.azure.com/$(orgName)/$(System.TeamProject)/_git/$(Build.Repository.Name)
+          SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+        displayName: "Checkout from GIT. We checkout both HEAD and BASE branches to generate DELTA"
+        continueOnError: false
+
+        # Run SFDX GIT and creates delta
+      - script: |
+          mkdir force-app-delta
+          sfdx sgd:source:delta --to $(System.PullRequest.SourceBranch) --from $(git merge-base $(System.PullRequest.SourceBranch) $(System.PullRequest.TargetBranch)) -s force-app --generate-delta --output ./force-app-delta/
+          echo "Package to deploy"
+          cat force-app-delta/package/package.xml
+          echo "Package to destroy"
+          cat force-app-delta/destructiveChanges/destructiveChanges.xml
+        displayName: "Run sfdx git delta and creates delta"
+        continueOnError: false
+
+        # Replaces placeholders in the metadata with the value from the property file for the right environment and creates folder /deploy with all the components with replaced placeholders. THe folder /force-app contains same as /deploy
+      - script: |
+          ant prepare -Dsf.env=QA
+        displayName: "Replaces placeholders in the files with the property file variable values from the right environment"
+        continueOnError: false
+
+        # Runs PMD ruleset. This task will fail if there is any rule that is violated. We need to update ~/.sfdx-scanner/Config.json to make sure PMD scans as well -meta.xml files
+        # We have defined custom Apex rules and custom XML Metadata rules that we should add as rules in PMD scanner by running scanner:rule:add
+        # Pending command to be used: sed -i -e 's+"!\*\*/\*-meta.xml"+"\*\*/\*-meta.xml"+g' ~/.sfdx-scanner/Config.json
+      - script: |
+          sfdx scanner:rule:add --language xml --path "./scripts/pmd/category/xml/xml_custom_rules.xml"
+          sfdx scanner:rule:add --language apex --path "./scripts/pmd/category/apex/apex_custom_rules.xml"
+          echo "List of custom and standard rules used for NCS : "
+          sfdx scanner:rule:list
+          sed -i -e 's+"!\*\*/\*-meta.xml"+"\*\*/\*-meta.xml"+g' ~/.sfdx-scanner/Config.json
+          echo "Executing PMD Scan now : "
+          pwsh -c 'sfdx scanner:run  --target "./force-app/" --pmdconfig “./scripts/pmd/rulesets/critical_scan.xml” --severity-threshold "1" --engine "pmd"'
+        displayName: "Apex Code + Metadata Best Practices scanning using PMD. This step will FAIL if there is any critical coding standards not met"
+        continueOnError: false
+
+        # Runs Flow Scan. This task will fail if there is any rule that is violated
+        # We should accept flow scanner because it is not trusted by default
+      - script: |
+          sfdx flow:scan -d "./force-app/"
+        displayName: "Salesforce Flow Scan. This step will FAIL if there is any critical violation of governor limits hitted in Flows"
+        continueOnError: false
+
+        # Runs ESLint rules. This task will fail if there is any rule that is violated.
+      - script: |
+          pwsh -c 'npm dedupe'
+          echo "Executing ESLint Scan now : " 
+          pwsh -c 'sfdx scanner:run  --target "./force-app/**/*.js" --eslintconfig "./scripts/eslint/.eslintrc.json" --severity-threshold "1" --engine "eslint-lwc"'
+        displayName: "LWC Best Practices scanning using ESLint. This step will FAIL if there is any critical coding standards not met"
+        continueOnError: false
+
+        # Authentication to Target org
+      - script: |
+          echo $TARGET_ORG > token.txt         
+          sfdx force:auth:sfdxurl:store -f token.txt -a myOrg -s
+        displayName: "Write the token into a file and authenticate to Target Org"
+        env:
+          TARGET_ORG: $(SF_QA)
+        continueOnError: false
+
+        # Delta Validation to target Org. If changes are related with Apex classes or flows then we execute test classes
+      - script: |
+          if [ $(cat force-app-delta/package/package.xml | wc -l) -gt 4 ];then
+            if [ $(egrep 'name>ApexClass|name>Apextrigger|name>Flow' force-app-delta/package/package.xml | wc -l) -gt 1 ];then
+              echo "Deploying Delta and not running Apex tests"
+              sfdx force:source:deploy --ignorewarnings --manifest "./force-app-delta/package/package.xml" -l NoTestRun -w 100 --checkonly -u myOrg --json
+            else 
+              echo "Deploying Delta and Runing all Local Tests since this changes introduces updates in Apex Classes and Flows"
+              sfdx force:source:deploy --ignorewarnings --manifest "./force-app-delta/package/package.xml" -l RunLocalTests -w 100 --checkonly -u myOrg --json
+            fi
+            if [ $? -ne 0 ]; then
+              echo "SF - deployment Failed"
+              exit 1
+            fi   
+          else
+                echo "No SF changes found. Deployment skipped"
+          fi
+        displayName: 'Delta Validation to target Org. If changes are related with Apex classes or flows then we execute test classes. Errors are inside the JSON node "result.details.componentFailures" for component failure'
+        continueOnError: false
+
+        # Destructive changes
+      - script: |
+          if grep -q '<types>' ./force-app-delta/destructiveChanges/destructiveChanges.xml ; then
+             echo "Removing the below components: \n `cat force-app-delta/destructiveChanges/destructiveChanges.xml`"
+             sfdx force:source:deploy --ignorewarnings --manifest  "./force-app-delta/package/package.xml" --postdestructivechanges "./force-app-delta/destructiveChanges/destructiveChanges.xml" -l NoTestRun -w 100 -c -u myOrg --json
+          else
+             echo "No destructive changes found"
+          fi
+        displayName: "Delta Validation to target Org + Destructive changes without running test classes. If this tep FAILS job is still success"
+        continueOnError: true

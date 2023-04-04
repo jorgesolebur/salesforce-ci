@@ -1,0 +1,90 @@
+# This is a basic workflow to help you get started with Actions
+
+name: MERGE_PULL_REQUEST
+
+# Controls when the action will run.
+on:
+  # Triggers the workflow on push or pull request events but only for the develop branch
+  pull_request:
+    types: [closed]
+    branches: [develop]
+
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+jobs:
+  # This workflow contains a single job called "deploy_pull_request"
+  DEPLOY_DELTA_PR:
+    if: github.event.pull_request.merged == true
+    # The type of runner that the job will run on
+    runs-on: ubuntu-latest
+    container:
+      image: jorgesolebur/salesforce-ci:latest
+
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: "2"
+
+      # Run SFDX GIT and creates delta
+      - name: Run sfdx git delta and creates delta
+        run: |
+          export HOME=/root
+          mkdir force-app-delta
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          pwsh -c 'sfdx sgd:source:delta -s force-app -t "HEAD" -f "HEAD^" -s force-app --generate-delta --output ./force-app-delta/'
+      - name: Show package to deploy
+        run: |
+          cat force-app-delta/package/package.xml
+      - name: Show package to destroy
+        run: |
+          cat force-app-delta/destructiveChanges/destructiveChanges.xml
+
+      # Replaces placeholders in the metadata with the value from the property file for the right environment
+      - name: Replaces placeholder in the files with the property files from the right environment
+        run: |
+          export HOME=/root
+          ant prepare -Dsf.env=QA
+
+      #Authentication to Target org
+      - name: Write the token into a file and authenticate to Target Org
+        run: |
+          export HOME=/root
+          echo ${{ secrets.SPRINTST }} > token.txt         
+          sfdx force:auth:sfdxurl:store -f token.txt -a myOrg -s
+
+      # Delta Deployment to target Org only if there are changes to deploy. If changes are related with Apex classes or flows then we execute test classes
+      - name: Delta Deployment to target Org only if there are changes to deploy. If changes are related with Apex classes or flows then we execute test classes
+        id: delta-deployment
+        run: |
+          export HOME=/root
+          if [ $(cat force-app-delta/package/package.xml | wc -l) -gt 4 ];then
+            if [ $(egrep 'name>ApexClass|name>Apextrigger|name>Flow' force-app-delta/package/package.xml | wc -l) -gt 1 ];then
+              echo "Deploying Delta and not running Apex tests"
+              sfdx force:source:deploy --ignorewarnings --manifest force-app-delta/package/package.xml -l NoTestRun -w 100 -u myOrg --json
+            else 
+              echo "Deploying Delta and not running Apex tests"
+              sfdx force:source:deploy --ignorewarnings --manifest force-app-delta/package/package.xml -l NoTestRun -w 100 -u myOrg --json
+            fi
+            if [ $? -ne 0 ]; then
+              echo "SF - deployment Failed"
+              exit 1
+            fi   
+          else
+                echo "No SF changes found. Deployment skipped"
+          fi
+
+      # Delta Destruction to target Org
+      - name: Delta Destruction to target Org if there are changes to destroy. If this step fails we need to manually delete the failed components. Errors are inside the JSON node "result.details.componentFailures" for component failure
+        continue-on-error: true
+        run: |
+          export HOME=/root
+          if grep -q '<types>' ./force-app-delta/destructiveChanges/destructiveChanges.xml ; then
+             echo "Removing the below components: \n `cat force-app-delta/destructiveChanges/destructiveChanges.xml`"
+             sfdx force:source:deploy --ignorewarnings --manifest force-app-delta/destructiveChanges/package.xml --postdestructivechanges force-app-delta/destructiveChanges/destructiveChanges.xml -w 100 -l NoTestRun  -u myOrg --json
+          else
+             echo "No destructive changes found. Destruction step skipped"
+          fi

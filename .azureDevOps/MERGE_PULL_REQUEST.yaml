@@ -1,0 +1,87 @@
+# Starter pipeline
+# This pipeline should be triggered automatically when pull requests are created against developer branch
+trigger:
+  branches:
+    include:
+      - develop
+
+pool:
+  vmImage: ubuntu-latest
+
+jobs:
+  - job: MERGE_PULL_REQUEST
+    displayName: MERGE PULL REQUEST
+    container: jorgesolebur/salesforce-ci:latest
+    timeoutInMinutes: 180
+
+    variables:
+      - name: orgName
+        value: jorgesolebur
+
+    steps:
+      - checkout: self
+        fetchDepth: 2
+
+        # Installing plugins for the running user
+      - script: |
+          echo "y" | sfdx plugins:install sfdx-git-delta
+        displayName: "Install tools on running user"
+        continueOnError: false
+
+        # Run SFDX GIT and creates delta
+      - script: |
+          mkdir force-app-delta
+          echo "Commit ID to be deployed : " $(Build.SourceVersion)
+          sfdx sgd:source:delta --to "$(Build.SourceVersion)" --from "$(Build.SourceVersion)~1" -s force-app --generate-delta --output ./force-app-delta/
+          echo "Package to deploy"
+          cat force-app-delta/package/package.xml
+          echo "Package to destroy"
+          cat force-app-delta/destructiveChanges/destructiveChanges.xml
+        displayName: "Run sfdx git delta and creates delta"
+        continueOnError: false
+
+        # Replaces placeholders in the metadata with the value from the property file for the right environment and creates folder /deploy with all the components with replaced placeholders. THe folder /force-app contains same as /deploy
+      - script: |
+          ant prepare -Dsf.env=QA
+        displayName: "Replaces placeholders in the files with the property file variable values from the right environment"
+        continueOnError: false
+
+        # Authentication to Target org
+      - script: |
+          echo $TARGET_ORG > token.txt         
+          sfdx force:auth:sfdxurl:store -f token.txt -a myOrg -s
+        displayName: "Write the token into a file and authenticate to Target Org"
+        env:
+          TARGET_ORG: $(SF_QA)
+        continueOnError: false
+
+        # Delta Deployment to target Org only if there are changes to deploy. If changes are related with Apex classes or flows then we execute test classes
+      - script: |
+          if [ $(cat force-app-delta/package/package.xml | wc -l) -gt 4 ];then
+            if [ $(egrep 'name>ApexClass|name>Apextrigger|name>Flow' force-app-delta/package/package.xml | wc -l) -gt 1 ];then
+              echo "Deploying Delta and not running Apex tests"
+              sfdx force:source:deploy --ignorewarnings --manifest force-app-delta/package/package.xml -l NoTestRun -w 100 -u myOrg --json
+            else 
+              echo "Deploying Delta and not running Apex tests"
+              sfdx force:source:deploy --ignorewarnings --manifest force-app-delta/package/package.xml -l NoTestRun -w 100 -u myOrg --json
+            fi
+            if [ $? -ne 0 ]; then
+              echo "SF - deployment Failed"
+              exit 1
+            fi   
+          else
+                echo "No SF changes found. Deployment skipped"
+          fi
+        displayName: 'Delta Deployment WITHOUT Destructive Changes without test class run. Check JSON node "result.details.componentFailures" for component failure'
+        continueOnError: false
+
+        # Delta Destruction to target Org
+      - script: |
+          if grep -q '<types>' ./force-app-delta/destructiveChanges/destructiveChanges.xml ; then
+             echo "Removing the below components: \n `cat force-app-delta/destructiveChanges/destructiveChanges.xml`"
+             sfdx force:source:deploy --ignorewarnings --manifest force-app-delta/destructiveChanges/package.xml --postdestructivechanges force-app-delta/destructiveChanges/destructiveChanges.xml -w 100 -l NoTestRun  -u myOrg --json
+          else
+             echo "No destructive changes found. Destruction step skipped"
+          fi
+        displayName: 'Delta Destruction to target Org. If this step fails we need to manually delete the failed components. Errors are inside the JSON node "result.details.componentFailures" for component failure'
+        continueOnError: true

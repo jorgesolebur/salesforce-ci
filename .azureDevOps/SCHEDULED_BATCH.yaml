@@ -1,0 +1,65 @@
+# Starter pipeline
+# This pipeline us scheduled every night. It will do full deployment into target org and will run all test classes. Test result will be stored as a record in a Salesforce Org
+schedules: 
+  - cron: "0 18 * * 1-5"
+    branches:
+      include:
+      - develop
+    always: true
+
+trigger: none
+
+pool:
+  vmImage: ubuntu-latest
+
+jobs:
+    - job: SCHEDULED_BATCH
+      displayName: SCHEDULED BATCH
+      container: jorgesolebur/salesforce-ci:latest
+      timeoutInMinutes: 180
+
+      variables:
+      - name: orgName
+        value: jorgesolebur 
+
+      steps:
+
+      - checkout: self
+        fetchDepth: 1
+
+        # Replaces placeholders in the metadata with the value from the property file for the right environment and creates folder /deploy with all the components with replaced placeholders. THe folder /force-app contains same as /deploy
+      - script: |
+          ant prepare -Dsf.env=QA
+        displayName: 'Replaces placeholders in the files with the property file variable values from the right environment'
+        continueOnError: false
+
+        # Authentication to Target org
+      - script: |
+          echo $TARGET_ORG > token.txt         
+          sfdx force:auth:sfdxurl:store -f token.txt -a myOrg -s
+        displayName: 'Write the token into a file and authenticate to Target Org'
+        env:
+          TARGET_ORG: $(SF_QA)
+        continueOnError: false
+
+        # Full deployment into target org WITHOUT running test classes
+      - script: |
+          sfdx force:source:deploy -p force-app/main/default -l NoTestRun -w 100 -u myOrg --ignorewarnings
+        displayName: 'Delta Deployment WITHOUT Destructive Changes without test class run. Check JSON node "result.details.componentFailures" for component failure'
+        continueOnError: true
+
+        # Run all local test in target sandbox
+      - script: |
+          sfdx force:apex:test:run --json -r json -l RunLocalTests --codecoverage -w 60 -u myOrg >> result.json
+        displayName: 'Run all local test in target sandbox'
+        continueOnError: false
+
+        # Creates a record in Tracker with details of the test class ran
+      - script: |
+          echo $(SF_TRACKER) > tracker.txt         
+          sfdx force:auth:sfdxurl:store -f tracker.txt -a trackerOrg
+          sfdx force:data:record:create -v "$(echo "TR_Total_Lines__c=")$(jq '.result.coverage.summary.totalLines' result.json) $(echo "TR_Covered_Lines__c=")$(jq '.result.coverage.summary.coveredLines' result.json) $(echo "TR_Org_Wide_Coverage__c=")$(jq '.result.coverage.summary.orgWideCoverage' result.json | tr -d %) $(echo "TR_Test_Run_Coverage__c=")$(jq '.result.coverage.summary.testRunCoverage' result.json | tr -d %) $(echo "TR_Outcome__c=")$(jq '.result.summary.outcome' result.json) $(echo "TR_Tests_Ran__c=")$(jq '.result.summary.testsRan' result.json) $(echo "TR_Passing_Tests__c=")$(jq '.result.summary.passing' result.json) $(echo "TR_Failing_Tests__c=")$(jq '.result.summary.failing' result.json) $(echo "TR_Skipped_Tests__c=")$(jq '.result.summary.skipped' result.json) $(echo "TR_Test_Execution_Time__c=")$(jq '.result.summary.testExecutionTime' result.json | tr -d ' ms') $(echo "TR_Org_ID__c=")$(jq '.result.summary.orgId' result.json)" -s TR_Apex_Test_Run_Result__c -u trackerOrg
+        env:
+          TARGET_ORG: $(SF_TRACKER)
+        displayName: 'Create a Summary Test Run Results record in Tracker'
+        continueOnError: false

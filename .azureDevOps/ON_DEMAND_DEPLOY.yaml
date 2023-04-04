@@ -1,0 +1,102 @@
+# Starter pipeline
+# This pipeline us scheduled every night. It will do full deployment into target org and will run all test classes. Test result will be stored as a record in a Salesforce Org
+parameters:
+  - name: TargetOrg
+    displayName: Target Org
+    type: string
+    default: QA
+    values:
+      - QA
+      - SIT
+      - UAT
+      - MIG
+      - PROD
+  - name: DeploymentType
+    displayName: Deployment Type
+    type: string
+    default: Validation
+    values:
+      - Validation
+      - Deployment
+  - name: TestRun
+    displayName: Test Run
+    type: string
+    default: RunLocalTests
+    values:
+      - RunLocalTests
+      - NoTestRun
+
+trigger: none
+
+pool:
+  vmImage: ubuntu-latest
+
+jobs:
+  - job: ON_DEMAND_DEPLOY
+    displayName: ON DEMAND DEPLOY
+    container: jorgesolebur/salesforce-ci:latest
+    timeoutInMinutes: 180
+
+    variables:
+      - name: orgName
+        value: jorgesolebur
+
+    steps:
+      - checkout: self
+        fetchDepth: 1
+
+        # Replaces placeholders in the metadata with the value from the property file for the right environment and creates folder /deploy with all the components with replaced placeholders. THe folder /force-app contains same as /deploy
+      - script: |
+          ant prepare -Dsf.env=${{ parameters.TargetOrg }}
+        displayName: "Replaces placeholders in the files with the property file variable values from the right environment"
+        continueOnError: false
+
+        # Authentication to Target org
+      - ${{ if eq(parameters.TargetOrg, 'QA') }}:
+          - script: |
+              echo Preparing credentials for ${{ parameters.TargetOrg }}
+              echo $TARGET_ORG > token.txt
+            env:
+              TARGET_ORG: $(SF_QA)
+            displayName: Preparing credentials
+      - ${{ if eq(parameters.TargetOrg, 'SIT') }}:
+          - script: |
+              echo Preparing credentials for ${{ parameters.TargetOrg }}
+              echo $TARGET_ORG > token.txt
+            env:
+              TARGET_ORG: $(SF_SIT)
+            displayName: Preparing credentials
+      - ${{ if eq(parameters.TargetOrg, 'UAT') }}:
+          - script: |
+              echo Preparing credentials for ${{ parameters.TargetOrg }}
+              echo $TARGET_ORG > token.txt
+            env:
+              TARGET_ORG: $(SF_UAT)
+            displayName: Preparing credentials
+      - ${{ if eq(parameters.TargetOrg, 'MIG') }}:
+          - script: |
+              echo Preparing credentials for ${{ parameters.TargetOrg }}
+              echo $TARGET_ORG > token.txt
+            env:
+              TARGET_ORG: $(SF_MIG)
+            displayName: Preparing credentials
+      - ${{ if eq(parameters.TargetOrg, 'PROD') }}:
+          - script: |
+              echo Preparing credentials for ${{ parameters.TargetOrg }}
+              echo $TARGET_ORG > token.txt
+            env:
+              TARGET_ORG: $(SF_PROD)
+            displayName: Preparing credentials
+
+      - script: sfdx force:auth:sfdxurl:store -f token.txt -a myOrg -s
+        displayName: Authenticating against target org
+        continueOnError: false
+
+        # Deployment / Validation into target org with / without running apex classes
+      - ${{ if eq(parameters.DeploymentType, 'Validation') }}:
+          - script: sfdx force:source:deploy -p force-app/main/default -l ${{ parameters.TestRun }} -w 100 -u myOrg -c
+            displayName: "Validate source code"
+      - ${{ if eq(parameters.DeploymentType, 'Deployment') }}:
+          - script: sfdx force:source:deploy -p force-app/main/default -l ${{ parameters.TestRun }} -w 100 -u myOrg
+            displayName: "Deploy source code"
+    continueOnError: false
