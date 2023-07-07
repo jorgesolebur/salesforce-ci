@@ -22,6 +22,12 @@ To create an interactive container that does not exit immediately, run the follo
 docker run -dit jorgesolebur/salesforce-ci:latest
 ```
 
+To create an interactive container that does not exit immediately with the path /Users/jsolerburguera/Documents/repos/salesforce-ci from local machine accessible from the container, run the following :
+
+```
+docker run -d -v /Users/jsolerburguera/Documents/repos/ncs-phoenix:/workingDir -dit jorgesolebur/salesforce-ci:latest
+```
+
 To delete all cache use the following
 
 ```
