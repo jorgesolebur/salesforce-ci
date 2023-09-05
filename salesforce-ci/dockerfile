@@ -50,13 +50,8 @@ WORKDIR /usr/app
 COPY ./ /usr/app
 RUN echo 'y' | npm install eslint @babel/core @babel/eslint-parser @lwc/eslint-plugin-lwc --save-dev
 
-# Install Salesforce CLI and Other SFDX Plugins
-RUN wget https://developer.salesforce.com/media/salesforce-cli/sfdx-linux-amd64.tar.xz && \
-    mkdir sfdx && \
-    tar xJf sfdx-linux-amd64.tar.xz -C sfdx --strip-components 1 && \
-    ./sfdx/install && \
-    sfdx plugins:update && \
-    sfdx update && \
+# Install Salesforce CLI and Other SFDX Plugins wiht NPM
+RUN npm install @salesforce/cli --global && \
     echo 'y' | sfdx plugins:install @salesforce/sfdx-scanner && \
     echo 'y' | sfdx plugins:install sfdx-git-delta@latest && \
     echo 'y' | sfdx plugins:install lightning-flow-scanner && \
