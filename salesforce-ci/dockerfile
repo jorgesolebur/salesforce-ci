@@ -52,7 +52,7 @@ COPY ./ /usr/app
 RUN echo 'y' | npm install eslint @babel/core @babel/eslint-parser @lwc/eslint-plugin-lwc --save-dev
 
 # Install Salesforce CLI and Other SFDX Plugins wiht NPM. Update the SF version with newer versions or keep it empty for latest
-RUN npm install @salesforce/cli@2.10.2 --global && \
+RUN npm install @salesforce/cli@2.15.9 --global && \
     echo 'y' | sf plugins install @salesforce/sfdx-scanner && \
     echo 'y' | sf plugins install sfdx-git-delta@latest && \
     echo 'y' | sf plugins install lightning-flow-scanner && \
