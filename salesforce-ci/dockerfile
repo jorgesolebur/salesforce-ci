@@ -56,7 +56,8 @@ RUN mkdir /usr/app/npm-global && \
     npm config set prefix /usr/app/npm-global
 
 # Install Salesforce CLI and Other SFDX Plugins wiht NPM. Update the SF version with newer versions or keep it empty for latest
-RUN export PATH="$PATH:/usr/app/npm-global/bin/" && \
+WORKDIR /usr/app
+RUN export PATH="$PATH:/usr/app/npm-global/bin" && \
     npm install @salesforce/cli@2.22.7 --prefix /usr/app/npm-global --global && \
     echo 'y' | sf plugins install @salesforce/sfdx-scanner && \
     echo 'y' | sf plugins install sfdx-git-delta && \
@@ -70,10 +71,10 @@ RUN wget https://github.com/pmd/pmd/releases/download/pmd_releases%2F7.0.0-rc4/p
     rm -f pmd-dist-7.0.0-rc4-bin.zip
 
 # Updating PATH so we can access all command lines directly from key words for ALL users in Docker
-ENV PATH="$PATH:/usr/app/pmd-bin-7.0.0-rc4/bin/"
-ENV PATH="$PATH:/usr/app/npm-global/bin/"
-RUN echo "export PATH=/usr/app/pmd-bin-7.0.0-rc4/bin/:${PATH}" >> /root/.bashrc
-RUN echo "export PATH=/usr/app/npm-global/bin/:${PATH}" >> /root/.bashrc
+ENV PATH="$PATH:/usr/app/pmd-bin-7.0.0-rc4/bin"
+ENV PATH="$PATH:/usr/app/npm-global/bin"
+RUN echo "export PATH=/usr/app/pmd-bin-7.0.0-rc4/bin:${PATH}" >> /root/.bashrc
+RUN echo "export PATH=/usr/app/npm-global/bin:${PATH}" >> /root/.bashrc
 RUN echo "${PATH}" >> /etc/bash.bashrc
 RUN echo "${PATH}" >> /etc/profile
 RUN echo "export PATH=$PATH" > /etc/environment
