@@ -17,6 +17,7 @@ RUN apt-get update && \
     apt-get install -y wget && \
     apt-get install -y git &&  \
     apt-get install -y unzip &&  \
+    apt-get install -y sudo &&  \
     apt install -y jq &&  \
     rm -rf /var/lib/apt/lists/*
 
@@ -71,11 +72,13 @@ RUN wget https://github.com/pmd/pmd/releases/download/pmd_releases%2F7.0.0-rc4/p
     unzip pmd-dist-7.0.0-rc4-bin.zip && \
     rm -f pmd-dist-7.0.0-rc4-bin.zip
 
+#Changing root password so we can execute sudo later
+RUN echo 'root:Docker!' | chpasswd
+
 # Updating PATH so we can access all command lines directly from key words for ALL users in Docker
 ENV PATH="$PATH:/usr/app/pmd-bin-7.0.0-rc4/bin"
 ENV PATH="$PATH:/usr/app/npm-global/bin"
-RUN echo "export PATH=/usr/app/pmd-bin-7.0.0-rc4/bin:${PATH}" >> /root/.bashrc
-RUN echo "export PATH=/usr/app/npm-global/bin:${PATH}" >> /root/.bashrc
-RUN echo "${PATH}" >> /etc/bash.bashrc
-RUN echo "${PATH}" >> /etc/profile
-RUN echo "export PATH=$PATH" > /etc/environment
+RUN echo "export PATH=${PATH}" >> /root/.bashrc
+RUN echo "export PATH=${PATH}" >> /etc/bash.bashrc
+RUN echo "export PATH=${PATH}" >> /etc/profile
+RUN echo "export PATH=${PATH}" > /etc/environment
