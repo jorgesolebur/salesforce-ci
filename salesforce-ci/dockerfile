@@ -17,6 +17,7 @@ RUN apt-get update && \
     apt-get install -y wget && \
     apt-get install -y git &&  \
     apt-get install -y unzip &&  \
+    apt-get install -y sudo &&  \
     apt install -y jq &&  \
     rm -rf /var/lib/apt/lists/*
 
@@ -34,7 +35,8 @@ RUN apt-get install -y wget apt-transport-https software-properties-common && \
     wget -q https://packages.microsoft.com/config/ubuntu/20.04/packages-microsoft-prod.deb && \
     dpkg -i packages-microsoft-prod.deb && \
     apt-get update && \
-    apt-get install -y powershell
+    apt-get install -y powershell && \
+    rm -f packages-microsoft-prod.deb
 
 # Install NPM
 RUN apt-get update && apt-get install -y \
@@ -51,19 +53,32 @@ WORKDIR /usr/app
 COPY ./ /usr/app
 RUN echo 'y' | npm install eslint @babel/core @babel/eslint-parser @lwc/eslint-plugin-lwc --save-dev
 
+#Fix for azure devops to install all npm packages in a custom location
+RUN mkdir /usr/app/npm-global && \
+    npm config set prefix /usr/app/npm-global
+
 # Install Salesforce CLI and Other SFDX Plugins wiht NPM. Update the SF version with newer versions or keep it empty for latest
-RUN npm install @salesforce/cli@2.15.9 --global && \
+WORKDIR /usr/app
+RUN export PATH="$PATH:/usr/app/npm-global/bin" && \
+    npm install @salesforce/cli@2.22.7 --prefix /usr/app/npm-global --global && \
     echo 'y' | sf plugins install @salesforce/sfdx-scanner && \
-    echo 'y' | sf plugins install sfdx-git-delta@latest && \
+    echo 'y' | sf plugins install sfdx-git-delta && \
     echo 'y' | sf plugins install lightning-flow-scanner && \
     sf --version
 
 # Install PMD. Get link for newer version from https://github.com/pmd/pmd/releases
 WORKDIR /usr/app
 RUN wget https://github.com/pmd/pmd/releases/download/pmd_releases%2F7.0.0-rc4/pmd-dist-7.0.0-rc4-bin.zip && \
-    unzip pmd-dist-7.0.0-rc4-bin.zip
+    unzip pmd-dist-7.0.0-rc4-bin.zip && \
+    rm -f pmd-dist-7.0.0-rc4-bin.zip
 
-ENV PATH="/usr/app/pmd-bin-7.0.0-rc4/bin/:$PATH"
-RUN echo "export PATH=/usr/app/pmd-bin-7.0.0-rc4/bin/:${PATH}" >> /root/.bashrc
-RUN echo "${PATH}" >> /etc/bash.bashrc
-RUN echo "${PATH}" >> /etc/profile
+#Changing root password so we can execute sudo later
+RUN echo 'root:Docker!' | chpasswd
+
+# Updating PATH so we can access all command lines directly from key words for ALL users in Docker
+ENV PATH="$PATH:/usr/app/pmd-bin-7.0.0-rc4/bin"
+ENV PATH="$PATH:/usr/app/npm-global/bin"
+RUN echo "export PATH=${PATH}" >> /root/.bashrc
+RUN echo "export PATH=${PATH}" >> /etc/bash.bashrc
+RUN echo "export PATH=${PATH}" >> /etc/profile
+RUN echo "export PATH=${PATH}" > /etc/environment
