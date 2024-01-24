@@ -76,7 +76,8 @@ RUN wget https://github.com/pmd/pmd/releases/download/pmd_releases%2F7.0.0-rc4/p
 RUN echo 'root:Docker!' | chpasswd
 
 # Updating PATH so we can access all command lines directly from key words for ALL users in Docker
-RUN chmod -R 777 /root
+RUN chmod 777 /root && chmod 777 /root/.local && chmod 777 /root/.local/share/ && chmod 777 /root/.local/share/sf/ && chmod 777 /root/.local/share/sf/package.json
+RUN chmod -R 777 /root/.sf/
 ENV PATH="$PATH:/usr/app/pmd-bin-7.0.0-rc4/bin"
 ENV PATH="$PATH:/usr/app/npm-global/bin"
 RUN echo "export PATH=${PATH}" >> /root/.bashrc
