@@ -61,6 +61,7 @@ RUN mkdir /usr/app/npm-global && \
 WORKDIR /usr/app
 RUN export PATH="$PATH:/usr/app/npm-global/bin" && \
     npm install @salesforce/cli@2.22.7 --prefix /usr/app/npm-global --global && \
+    npm install --global vlocity && \
     echo 'y' | sf plugins install @salesforce/sfdx-scanner && \
     echo 'y' | sf plugins install sfdx-git-delta && \
     echo 'y' | sf plugins install lightning-flow-scanner && \
