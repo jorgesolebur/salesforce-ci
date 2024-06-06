@@ -60,11 +60,12 @@ RUN mkdir /usr/app/npm-global && \
 # Install Salesforce CLI and Other SFDX Plugins wiht NPM. Update the SF version with newer versions or keep it empty for latest
 WORKDIR /usr/app
 RUN export PATH="$PATH:/usr/app/npm-global/bin" && \
-    npm install @salesforce/cli@2.22.7 --prefix /usr/app/npm-global --global && \
+    npm install @salesforce/cli --prefix /usr/app/npm-global --global && \
     echo 'y' | sf plugins install @salesforce/sfdx-scanner@latest-beta && \
-    npm install --global vlocity && \
+    #npm install --global vlocity && \
     echo 'y' | sf plugins install sfdx-git-delta && \
     echo 'y' | sf plugins install lightning-flow-scanner && \
+    echo 'y' | sf plugins install sfdmu && \
     sf --version
 
 # Install PMD. Get link for newer version from https://github.com/pmd/pmd/releases
