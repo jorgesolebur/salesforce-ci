@@ -18,20 +18,23 @@ on:
       targetOrg:
         description: "Target Org"
         required: true
-        default: "SPRINTST"
+        default: "QA"
         type: choice
         options:
-          - SPRINTST
-          - TEST
-        #- MIG
+          - QA
+          - DATAREF
+          - SIT
+          - UAT
+          - PREPROD
       deployType:
         description: "Deployment Type"
         required: true
-        default: "Validation"
+        default: "Metadata Validation"
         type: choice
         options:
-          - Validation
-          - Deployment
+          - Metadata Validation
+          - Metadata Deployment
+          - Data Deployment
 
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
@@ -49,38 +52,91 @@ jobs:
 
       # Replaces placeholders in the metadata with the value from the property file for the right environment
       - name: Replaces placeholder in the files with the property files from the right environment
-        if: ${{ github.event.inputs.targetOrg == 'SPRINTST' }}
+        if: ${{ github.event.inputs.targetOrg == 'QA' }}
         run: |
           ant prepare -Dsf.env=QA
       - name: Replaces placeholder in the files with the property files from the right environment
-        if: ${{ github.event.inputs.targetOrg == 'TEST' }}
+        if: ${{ github.event.inputs.targetOrg == 'DATAREF' }}
         run: |
-          ant prepare -Dsf.env=TEST
+          ant prepare -Dsf.env=DATAREF
       - name: Replaces placeholder in the files with the property files from the right environment
-        if: ${{ github.event.inputs.targetOrg == 'MIG' }}
+        if: ${{ github.event.inputs.targetOrg == 'SIT' }}
         run: |
-          ant prepare -Dsf.env=MIG
+          ant prepare -Dsf.env=SIT
+      - name: Replaces placeholder in the files with the property files from the right environment
+        if: ${{ github.event.inputs.targetOrg == 'UAT' }}
+        run: |
+          ant prepare -Dsf.env=UAT
+      - name: Replaces placeholder in the files with the property files from the right environment
+        if: ${{ github.event.inputs.targetOrg == 'PREPROD' }}
+        run: |
+          ant prepare -Dsf.env=PREPROD
 
       #Authentication to Target org
       - name: Write the token into a file and authenticate to Target Org
-        if: ${{ github.event.inputs.targetOrg == 'SPRINTST' }}
+        if: ${{ github.event.inputs.targetOrg == 'QA' }}
         run: |
-          echo ${{ secrets.SPRINTST }} > token.txt         
-          sfdx force:auth:sfdxurl:store -f token.txt -a myOrg -s
+          echo ${{ secrets.QA }} > token.txt         
+          sf auth sfdxurl store -f token.txt -a myOrg -s
       - name: Write the token into a file and authenticate to Target Org
-        if: ${{ github.event.inputs.targetOrg == 'TEST' }}
+        if: ${{ github.event.inputs.targetOrg == 'DATAREF' }}
         run: |
-          echo ${{ secrets.TEST }} > token.txt         
-          sfdx force:auth:sfdxurl:store -f token.txt -a myOrg -s
+          echo ${{ secrets.DATAREF }} > token.txt         
+          sf auth sfdxurl store -f token.txt -a myOrg -s
       - name: Write the token into a file and authenticate to Target Org
-        if: ${{ github.event.inputs.targetOrg == 'MIG' }}
+        if: ${{ github.event.inputs.targetOrg == 'SIT' }}
         run: |
-          echo ${{ secrets.MIG }} > token.txt         
-          sfdx force:auth:sfdxurl:store -f token.txt -a myOrg -s
+          echo ${{ secrets.SIT }} > token.txt         
+          sf auth sfdxurl store -f token.txt -a myOrg -s
+      - name: Write the token into a file and authenticate to Target Org
+        if: ${{ github.event.inputs.targetOrg == 'UAT' }}
+        run: |
+          echo ${{ secrets.UAT }} > token.txt         
+          sf auth sfdxurl store -f token.txt -a myOrg -s
+      - name: Write the token into a file and authenticate to Target Org
+        if: ${{ github.event.inputs.targetOrg == 'PREPROD' }}
+        run: |
+          echo ${{ secrets.PREPROD }} > token.txt         
+          sf auth sfdxurl store -f token.txt -a myOrg -s
+
 
       - name: Validate source code
-        if: ${{ github.event.inputs.deployType == 'Validation' }}
-        run: "sfdx force:source:deploy -p force-app/main/default -l ${{ github.event.inputs.testLevel }} -w 100 -u myOrg -c"
+        if: ${{ github.event.inputs.deployType == 'Metadata Validation' }}
+        run: "sf project deploy start -d force-app/main/default -l ${{ github.event.inputs.testLevel }} -w 100 -o myOrg --dry-run --concise"
       - name: Deploy source code
-        if: ${{ github.event.inputs.deployType == 'Deployment' }}
-        run: "sfdx force:source:deploy -p force-app/main/default -l ${{ github.event.inputs.testLevel }} -w 100 -u myOrg"
+        if: ${{ github.event.inputs.deployType == 'Metadata Deployment' }}
+        run: "sf project deploy start -d force-app/main/default -l ${{ github.event.inputs.testLevel }} -w 100 -o myOrg --concise"
+      - name: Deploy source data
+        if: ${{ github.event.inputs.deployType == 'Data Deployment' }}
+        run: | 
+          export HOME=/root
+          sf project deploy start -d ./deploymentSteps/preDataKpiDef/ -o myOrg
+          echo 'n' | sf sfdmu run -s csvfile -u myOrg -p ./scripts/sfdmu/metaDevToRepo/
+          sleep 4
+          if [ -s ./scripts/sfdmu/metaDevToRepo/CSVIssuesReport.csv ]; then
+            echo "There are issues while executing the simulation. Check CSVIssuesReport.csv in the Artifacts section"
+            exit 1
+          fi
+          if [ -s ./scripts/sfdmu/metaDevToRepo/MissingParentRecordsReport.csv ]; then
+            echo "There are issues while executing the simulation. Check MissingParentRecordsReport.csv in the Artifacts section"
+            exit 1
+          fi
+
+      - name: POST Deployment Step before deploying Data Import
+        if:  (success() || failure()) && (${{ github.event.inputs.deployType == 'Data Deployment' }})
+        run: |
+          export HOME=/root
+          sf project deploy start -d ./deploymentSteps/postDataKpiDef/ -o myOrg
+
+      - name: Upload SFDMU Logs
+        if:  (success() || failure()) && (${{ github.event.inputs.deployType == 'Data Deployment' }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: SFDMU Logs
+          path: |
+            ./scripts/sfdmu/metaDevToRepo/CSVIssuesReport.csv
+            ./scripts/sfdmu/metaDevToRepo/MissingParentRecordsReport.csv
+            ./scripts/sfdmu/metaDevToRepo/target/
+          if-no-files-found: ignore
+          retention-days: 3
+          compression-level: 6

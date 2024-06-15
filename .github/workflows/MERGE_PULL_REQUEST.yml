@@ -29,13 +29,13 @@ jobs:
         with:
           fetch-depth: "2"
 
-      # Run SFDX GIT and creates delta
-      - name: Run sfdx git delta and creates delta
+      # Run sf GIT and creates delta
+      - name: Run sf git delta and creates delta
         run: |
           export HOME=/root
           mkdir force-app-delta
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          pwsh -c 'sfdx sgd:source:delta -s force-app -t "HEAD" -f "HEAD^" -s force-app --generate-delta --output ./force-app-delta/'
+          pwsh -c 'sf sgd source delta -s force-app -t "HEAD" -f "HEAD^" -s force-app --generate-delta --output ./force-app-delta/'
       - name: Show package to deploy
         run: |
           cat force-app-delta/package/package.xml
@@ -47,14 +47,29 @@ jobs:
       - name: Replaces placeholder in the files with the property files from the right environment
         run: |
           export HOME=/root
-          ant prepare -Dsf.env=QA
+          echo "Running on Branch: ${{github.base_ref}}"
+          if [ "${{github.base_ref}}" = "develop" ]; then
+              echo "Preparing QA Properties"
+              ant prepare -Dsf.env=QA
+          else
+              echo "Unknown Branch, Exiting"
+              exit 1 
+          fi
+          
 
       #Authentication to Target org
       - name: Write the token into a file and authenticate to Target Org
         run: |
           export HOME=/root
-          echo ${{ secrets.SPRINTST }} > token.txt         
-          sfdx force:auth:sfdxurl:store -f token.txt -a myOrg -s
+          echo "Running on Branch: ${{github.base_ref}}"
+          if [ "${{github.base_ref}}" = "develop" ]; then
+              echo "Authing into Develop Org"
+              echo ${{ secrets.QA }} > token.txt      
+          else
+              echo "Unknown Branch, Exiting"
+              exit 1 
+          fi
+          sf auth sfdxurl store -f token.txt -a myOrg -s
 
       # Delta Deployment to target Org only if there are changes to deploy. If changes are related with Apex classes or flows then we execute test classes
       - name: Delta Deployment to target Org only if there are changes to deploy. If changes are related with Apex classes or flows then we execute test classes
@@ -62,19 +77,27 @@ jobs:
         run: |
           export HOME=/root
           if [ $(cat force-app-delta/package/package.xml | wc -l) -gt 4 ];then
-            if [ $(egrep 'name>ApexClass|name>Apextrigger|name>Flow' force-app-delta/package/package.xml | wc -l) -gt 1 ];then
-              echo "Deploying Delta and not running Apex tests"
-              sfdx force:source:deploy --ignorewarnings --manifest force-app-delta/package/package.xml -l NoTestRun -w 100 -u myOrg --json
+             NUMBER_OF_COMPONENTS=$(cat force-app-delta/package/package.xml | grep -o "<members" | wc -l)
+            if [ $(egrep 'name>ApexClass|name>Apextrigger' force-app-delta/package/package.xml | wc -l) -lt 1 ];then
+              echo "Validating Delta and not running Apex tests ($NUMBER_OF_COMPONENTS components)"
+              sf project deploy start --ignore-warnings --manifest "./force-app-delta/package/package.xml" -l NoTestRun -w 100 -o myOrg --json
             else 
-              echo "Deploying Delta and not running Apex tests"
-              sfdx force:source:deploy --ignorewarnings --manifest force-app-delta/package/package.xml -l NoTestRun -w 100 -u myOrg --json
+              echo "Validating Delta and Runing only committed Tests Classes Classes ($NUMBER_OF_COMPONENTS components). The % of coverage is only applicable to Apex classes covered byh the test classes committed"
+              SPECIFIED_TESTS=$(find force-app-delta/force-app/main/default/classes/* -iname '*test.cls' -or -iname '*Test.cls' | sed 's/force-app-delta\/force-app\/main\/default\/classes\///' | tr '\n' ' ' | sed 's/.$//' | sed 's/.cls//g')
+              if [ -z "$SPECIFIED_TESTS" ]; then
+                echo "You are committing Apex Classes or Triggers without including any test class. Please make sure you commit also the respective Test Classes"
+                exit 1
+              else
+                echo "Executing the following Test Classes: $SPECIFIED_TESTS"
+                sf project deploy start --ignore-warnings --manifest "./force-app-delta/package/package.xml" --test-level RunSpecifiedTests --tests $SPECIFIED_TESTS -w 100 -o myOrg --json
+              fi
             fi
             if [ $? -ne 0 ]; then
               echo "SF - deployment Failed"
               exit 1
             fi   
           else
-                echo "No SF changes found. Deployment skipped"
+            echo "No SF changes found. Deployment skipped"
           fi
 
       # Delta Destruction to target Org
@@ -84,7 +107,7 @@ jobs:
           export HOME=/root
           if grep -q '<types>' ./force-app-delta/destructiveChanges/destructiveChanges.xml ; then
              echo "Removing the below components: \n `cat force-app-delta/destructiveChanges/destructiveChanges.xml`"
-             sfdx force:source:deploy --ignorewarnings --manifest force-app-delta/destructiveChanges/package.xml --postdestructivechanges force-app-delta/destructiveChanges/destructiveChanges.xml -w 100 -l NoTestRun  -u myOrg --json
+             sf project deploy start --ignore-warnings --manifest force-app-delta/destructiveChanges/package.xml --post-destructive-changes force-app-delta/destructiveChanges/destructiveChanges.xml -w 100 -l NoTestRun -o myOrg --json
           else
              echo "No destructive changes found. Destruction step skipped"
           fi

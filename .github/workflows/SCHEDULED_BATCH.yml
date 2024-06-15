@@ -1,5 +1,5 @@
 # This workflow is supposed to be scheduled (daily)
-# This workflow will do the following actions in QA sandbox (sprintst)
+# This workflow will do the following actions in QA sandbox (QA)
 # - Run Local Test Classes and create in Tracker a Run Tests Records with the summary of the run
 # - Do a full deployment in target sandbox
 
@@ -7,6 +7,7 @@ name: SCHEDULED_BATCH
 
 # Set your workflow to run every day at 6pm (2am SG time)
 on:
+  workflow_dispatch:
   schedule:
     - cron: "0 18 * * 1-5"
 
@@ -15,7 +16,7 @@ on:
 
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  FULL_DEPLOYMENT_SPRINTST:
+  FULL_DEPLOYMENT_IN_QA:
     environment: QA
     runs-on: ubuntu-latest
     container:
@@ -36,22 +37,46 @@ jobs:
       - name: Write the token into a file and authenticate to Target Org
         run: |
           export HOME=/root
-          echo ${{ secrets.SPRINTST }} > sprintst.txt         
-          sfdx force:auth:sfdxurl:store -f sprintst.txt -a sprintstOrg -s
+          echo ${{ secrets.QA }} > qa.txt         
+          sf auth sfdxurl store -f qa.txt -a qaOrg -s
 
       #Full deployment in target org with NO TEST RUN
-      - name: "Full Deployment into SPRINTST"
+      - name: "Full Deployment into QA"
+        continue-on-error: true
         run: |
           export HOME=/root
-          sfdx force:source:deploy -p force-app/main/default -l NoTestRun -w 100 -u sprintstOrg
+          sf project deploy start -d force-app/main/default -l NoTestRun -w 100 -o qaOrg --json >> fullDeploymentResult.json
 
-  RUN_ALL_LOCAL_TESTS_IN_SPRINTST:
+      #Creates a record in Tracker with details of the Deployment
+      - name: Create a Summary Test Run Results record in Tracker
+        run: |
+          export HOME=/root
+          echo ${{ secrets.TRACKER }} > tracker.txt         
+          sf auth sfdxurl store -f tracker.txt -a trackerOrg
+          sf data create record -v "$(echo "TR_Deployment_ID__c=")$(jq '.result.id' fullDeploymentResult.json) $(echo "TR_Done__c=")$(jq '.result.done' fullDeploymentResult.json) $(echo "TR_Number_of_components_Deployed__c=")$(jq '.result.numberComponentsDeployed' fullDeploymentResult.json) $(echo "TR_Number_of_Components_Error__c=")$(jq '.result.numberComponentErrors' fullDeploymentResult.json) $(echo "TR_Success__c=")$(jq '.result.success' fullDeploymentResult.json) $(echo "TR_Total_Number_of_Components__c=")$(jq '.result.numberComponentsTotal' fullDeploymentResult.json) $(echo "TR_Failed_Components__c='")$(jq '.result.details.componentFailures[]' fullDeploymentResult.json | sed 's/"//g' )' $(echo "TR_Org_ID__c='00DH40000008jjRMAQ'")" -s TR_Full_Deployment_Run_Result__c -o trackerOrg
+          if [ jq '.result.success' fullDeploymentResult.json == "false" ]; then
+            echo "Deployment Failed"
+            exit 1
+          fi
+
+      - name: Upload artifacts
+        if:  success() || failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: QA Deployment Logs
+          path: |
+            ./fullDeploymentResult.json
+          if-no-files-found: ignore
+          retention-days: 3
+          compression-level: 6
+
+  RUN_ALL_LOCAL_TESTS_IN_QA:
     if: ${{ always() }}
-    needs: [FULL_DEPLOYMENT_SPRINTST]
+    needs: [FULL_DEPLOYMENT_IN_QA]
     environment: QA
     runs-on: ubuntu-latest
     container:
-      image: jorgesolebur/salesforce-ci:7.150
+      image: jorgesolebur/salesforce-ci:latest
     steps:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - uses: actions/checkout@v3
@@ -60,20 +85,743 @@ jobs:
       - name: Write the token into a file and authenticate to Target Org
         run: |
           export HOME=/root
-          echo ${{ secrets.SPRINTST }} > sprintst.txt         
-          sfdx force:auth:sfdxurl:store -f sprintst.txt -a sprintstOrg -s
+          echo ${{ secrets.QA }} > qa.txt         
+          sf auth sfdxurl store -f qa.txt -a qaOrg -s
 
       #Run all local test in target sandbox
       - name: Run all local test in target sandbox
         continue-on-error: true
         run: |
           export HOME=/root
-          sfdx force:apex:test:run --json -r json -l RunLocalTests --codecoverage -w 60 -u sprintstOrg >> result.json
+          sf apex run test --json -r json -l RunLocalTests --code-coverage -w 60 -o qaOrg >> result.json
 
       #Creates a record in Tracker with details of the test class ran
       - name: Create a Summary Test Run Results record in Tracker
         run: |
           export HOME=/root
           echo ${{ secrets.TRACKER }} > tracker.txt         
-          sfdx force:auth:sfdxurl:store -f tracker.txt -a trackerOrg
-          sfdx force:data:record:create -v "$(echo "TR_Total_Lines__c=")$(jq '.result.coverage.summary.totalLines' result.json) $(echo "TR_Covered_Lines__c=")$(jq '.result.coverage.summary.coveredLines' result.json) $(echo "TR_Org_Wide_Coverage__c=")$(jq '.result.coverage.summary.orgWideCoverage' result.json | tr -d %) $(echo "TR_Test_Run_Coverage__c=")$(jq '.result.coverage.summary.testRunCoverage' result.json | tr -d %) $(echo "TR_Outcome__c=")$(jq '.result.summary.outcome' result.json) $(echo "TR_Tests_Ran__c=")$(jq '.result.summary.testsRan' result.json) $(echo "TR_Passing_Tests__c=")$(jq '.result.summary.passing' result.json) $(echo "TR_Failing_Tests__c=")$(jq '.result.summary.failing' result.json) $(echo "TR_Skipped_Tests__c=")$(jq '.result.summary.skipped' result.json) $(echo "TR_Test_Execution_Time__c=")$(jq '.result.summary.testExecutionTime' result.json | tr -d ' ms') $(echo "TR_Org_ID__c=")$(jq '.result.summary.orgId' result.json)" -s TR_Apex_Test_Run_Result__c -u trackerOrg
+          sf auth sfdxurl store -f tracker.txt -a trackerOrg
+          sf data create record -v "$(echo "TR_Total_Lines__c=")$(jq '.result.coverage.summary.totalLines' result.json) $(echo "TR_Covered_Lines__c=")$(jq '.result.coverage.summary.coveredLines' result.json) $(echo "TR_Org_Wide_Coverage__c=")$(jq '.result.coverage.summary.orgWideCoverage' result.json | tr -d %) $(echo "TR_Test_Run_Coverage__c=")$(jq '.result.coverage.summary.testRunCoverage' result.json | tr -d %) $(echo "TR_Outcome__c=")$(jq '.result.summary.outcome' result.json) $(echo "TR_Tests_Ran__c=")$(jq '.result.summary.testsRan' result.json) $(echo "TR_Passing_Tests__c=")$(jq '.result.summary.passing' result.json) $(echo "TR_Failing_Tests__c=")$(jq '.result.summary.failing' result.json) $(echo "TR_Skipped_Tests__c=")$(jq '.result.summary.skipped' result.json) $(echo "TR_Test_Execution_Time__c=")$(jq '.result.summary.testExecutionTime' result.json | tr -d ' ms') $(echo "TR_Org_ID__c=")$(jq '.result.summary.orgId' result.json) $(echo "TR_Failed_Test_Classes__c='")$(jq '.result.tests[] | select(.Outcome == "Fail")' result.json | sed 's/"//g' )' " -s TR_Apex_Test_Run_Result__c -o trackerOrg  
+          if [ jq '.result.summary.outcome' result.json == "Failed" ]; then
+            echo "Apex Test Execution Failed"
+            exit 1
+          fi
+
+  # This workflow contains a single job called "build"
+  DELTA_DATA_DEPLOYMENT_IN_QA:
+    # The type of runner that the job will run on
+    needs: [FULL_DEPLOYMENT_IN_QA]
+    runs-on: ubuntu-latest
+    container:
+      image: jorgesolebur/salesforce-ci:latest
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v3
+        with:
+          ref: "develop"
+          fetch-depth: "1"
+
+      #Authentication to QA
+      - name: Write the token into a file and authenticate to Target Org
+        run: |
+          export HOME=/root
+          echo ${{ secrets.QA }} > token.txt         
+          sf auth sfdxurl store -f token.txt -a myOrg -s
+
+      #PRE Deployment Steps
+      - name: PRE Deployment Step before simulating Data Import
+        run: |
+          export HOME=/root
+          sf project deploy start -d ./deploymentSteps/preDataKpiDef/ -o myOrg
+
+      #SFDMU RUN
+      - name: Run Data Import SIMULATION. No data will be imported in target. This step will fail if there are missing dependencies
+        run: |
+          export HOME=/root
+          echo 'n' | sf sfdmu run -s csvfile -u myOrg -p ./scripts/sfdmu/metaDevToRepo/ --simulation
+          sleep 4
+          if [ -s ./scripts/sfdmu/metaDevToRepo/CSVIssuesReport.csv ]; then
+            echo "There are issues while executing the simulation. Check CSVIssuesReport.csv in the Artifacts section"
+            exit 1
+          fi
+          if [ -s ./scripts/sfdmu/metaDevToRepo/MissingParentRecordsReport.csv ]; then
+            echo "There are issues while executing the simulation. Check MissingParentRecordsReport.csv in the Artifacts section"
+            exit 1
+          fi
+
+      #POST Deployment Steps
+      - name: POST Deployment Step before simulating Data Import
+        if:  success() || failure()
+        run: |
+          export HOME=/root
+          sf project deploy start -d ./deploymentSteps/postDataKpiDef/ -o myOrg
+
+      - name: Upload artifacts
+        if:  success() || failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: QA SFDMU Logs
+          path: |
+            ./scripts/sfdmu/metaDevToRepo/CSVIssuesReport.csv
+            ./scripts/sfdmu/metaDevToRepo/MissingParentRecordsReport.csv
+            ./scripts/sfdmu/metaDevToRepo/target/
+          if-no-files-found: ignore
+          retention-days: 3
+          compression-level: 6
+
+  FULL_DEPLOYMENT_IN_DATAREF:
+    if: ${{ always() }}
+    environment: DATAREF
+    runs-on: ubuntu-latest
+    container:
+      image: jorgesolebur/salesforce-ci:latest
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v3
+        with:
+          ref: "develop"
+          fetch-depth: "1"
+
+      # Replaces placeholders in the metadata with the value from the property file for the right environment
+      - name: Replaces placeholder in the files with the property files from the right environment
+        run: |
+          ant prepare -Dsf.env=DATAREF
+
+      #Authentication to Target org
+      - name: Write the token into a file and authenticate to Target Org
+        run: |
+          export HOME=/root
+          echo ${{ secrets.DATAREF }} > dataref.txt         
+          sf auth sfdxurl store -f dataref.txt -a datarefOrg -s
+
+      #Full deployment in target org with NO TEST RUN
+      - name: "Full Deployment into DATAREF"
+        continue-on-error: true
+        run: |
+          export HOME=/root
+          sf project deploy start -d force-app/main/default -l NoTestRun -w 100 -o datarefOrg --json >> fullDeploymentResult.json
+
+      #Creates a record in Tracker with details of the Deployment
+      - name: Create a Summary Test Run Results record in Tracker
+        run: |
+          export HOME=/root
+          echo ${{ secrets.TRACKER }} > tracker.txt         
+          sf auth sfdxurl store -f tracker.txt -a trackerOrg
+          sf data create record -v "$(echo "TR_Deployment_ID__c=")$(jq '.result.id' fullDeploymentResult.json) $(echo "TR_Done__c=")$(jq '.result.done' fullDeploymentResult.json) $(echo "TR_Number_of_components_Deployed__c=")$(jq '.result.numberComponentsDeployed' fullDeploymentResult.json) $(echo "TR_Number_of_Components_Error__c=")$(jq '.result.numberComponentErrors' fullDeploymentResult.json) $(echo "TR_Success__c=")$(jq '.result.success' fullDeploymentResult.json) $(echo "TR_Total_Number_of_Components__c=")$(jq '.result.numberComponentsTotal' fullDeploymentResult.json) $(echo "TR_Failed_Components__c='")$(jq '.result.details.componentFailures[]' fullDeploymentResult.json | sed 's/"//g' )' $(echo "TR_Org_ID__c='00DH40000008jWjMAI'")" -s TR_Full_Deployment_Run_Result__c -o trackerOrg
+          if [ jq '.result.success' fullDeploymentResult.json == "false" ]; then
+            echo "Deployment Failed"
+            exit 1
+          fi
+
+      - name: Upload artifacts
+        if:  success() || failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DATAREF Deployment Logs
+          path: |
+            ./fullDeploymentResult.json
+          if-no-files-found: ignore
+          retention-days: 3
+          compression-level: 6
+  
+  RUN_ALL_LOCAL_TESTS_IN_DATAREF:
+    if: ${{ false }}
+    needs: [FULL_DEPLOYMENT_IN_DATAREF]
+    environment: DATAREF
+    runs-on: ubuntu-latest
+    container:
+      image: jorgesolebur/salesforce-ci:latest
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v3
+
+      #Authentication to Target org
+      - name: Write the token into a file and authenticate to Target Org
+        run: |
+          export HOME=/root
+          echo ${{ secrets.DATAREF }} > dataref.txt         
+          sf auth sfdxurl store -f dataref.txt -a datarefOrg -s
+
+      #Run all local test in target sandbox
+      - name: Run all local test in target sandbox
+        continue-on-error: true
+        run: |
+          export HOME=/root
+          sf apex run test --json -r json -l RunLocalTests --code-coverage -w 60 -o datarefOrg >> result.json
+
+      #Creates a record in Tracker with details of the test class ran
+      - name: Create a Summary Test Run Results record in Tracker
+        run: |
+          export HOME=/root
+          echo ${{ secrets.TRACKER }} > tracker.txt         
+          sf auth sfdxurl store -f tracker.txt -a trackerOrg
+          sf data create record -v "$(echo "TR_Total_Lines__c=")$(jq '.result.coverage.summary.totalLines' result.json) $(echo "TR_Covered_Lines__c=")$(jq '.result.coverage.summary.coveredLines' result.json) $(echo "TR_Org_Wide_Coverage__c=")$(jq '.result.coverage.summary.orgWideCoverage' result.json | tr -d %) $(echo "TR_Test_Run_Coverage__c=")$(jq '.result.coverage.summary.testRunCoverage' result.json | tr -d %) $(echo "TR_Outcome__c=")$(jq '.result.summary.outcome' result.json) $(echo "TR_Tests_Ran__c=")$(jq '.result.summary.testsRan' result.json) $(echo "TR_Passing_Tests__c=")$(jq '.result.summary.passing' result.json) $(echo "TR_Failing_Tests__c=")$(jq '.result.summary.failing' result.json) $(echo "TR_Skipped_Tests__c=")$(jq '.result.summary.skipped' result.json) $(echo "TR_Test_Execution_Time__c=")$(jq '.result.summary.testExecutionTime' result.json | tr -d ' ms') $(echo "TR_Org_ID__c=")$(jq '.result.summary.orgId' result.json) $(echo "TR_Failed_Test_Classes__c='")$(jq '.result.tests[] | select(.Outcome == "Fail")' result.json | sed 's/"//g' )' " -s TR_Apex_Test_Run_Result__c -o trackerOrg
+          if [ jq '.result.summary.outcome' result.json == "Failed" ]; then
+            echo "Apex Test Execution Failed"
+            exit 1
+          fi
+
+  # This workflow contains a single job called "build"
+  DELTA_DATA_DEPLOYMENT_IN_DATAREF:
+    # The type of runner that the job will run on
+    needs: [FULL_DEPLOYMENT_IN_DATAREF]
+    runs-on: ubuntu-latest
+    container:
+      image: jorgesolebur/salesforce-ci:latest
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v3
+        with:
+          ref: "develop"
+          fetch-depth: "1"
+
+      #Authentication to QA
+      - name: Write the token into a file and authenticate to Target Org
+        run: |
+          export HOME=/root
+          echo ${{ secrets.DATAREF }} > token.txt         
+          sf auth sfdxurl store -f token.txt -a myOrg -s
+
+      #PRE Deployment Steps
+      - name: PRE Deployment Step before simulating Data Import
+        run: |
+          export HOME=/root
+          sf project deploy start -d ./deploymentSteps/preDataKpiDef/ -o myOrg
+
+      #SFDMU RUN
+      - name: Run Data Import SIMULATION. No data will be imported in target. This step will fail if there are missing dependencies
+        run: |
+          export HOME=/root
+          echo 'n' | sf sfdmu run -s csvfile -u myOrg -p ./scripts/sfdmu/metaDevToRepo/ --simulation
+          sleep 4
+          if [ -s ./scripts/sfdmu/metaDevToRepo/CSVIssuesReport.csv ]; then
+            echo "There are issues while executing the simulation. Check CSVIssuesReport.csv in the Artifacts section"
+            exit 1
+          fi
+          if [ -s ./scripts/sfdmu/metaDevToRepo/MissingParentRecordsReport.csv ]; then
+            echo "There are issues while executing the simulation. Check MissingParentRecordsReport.csv in the Artifacts section"
+            exit 1
+          fi
+
+      #POST Deployment Steps
+      - name: POST Deployment Step before simulating Data Import
+        if:  success() || failure()
+        run: |
+          export HOME=/root
+          sf project deploy start -d ./deploymentSteps/postDataKpiDef/ -o myOrg
+
+      - name: Upload artifacts
+        if:  success() || failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DATAREF SFDMU Logs
+          path: |
+            ./scripts/sfdmu/metaDevToRepo/CSVIssuesReport.csv
+            ./scripts/sfdmu/metaDevToRepo/MissingParentRecordsReport.csv
+            ./scripts/sfdmu/metaDevToRepo/target/
+          if-no-files-found: ignore
+          retention-days: 3
+          compression-level: 6
+
+  FULL_DEPLOYMENT_IN_SIT:
+    if: ${{ false }}
+    environment: SIT
+    runs-on: ubuntu-latest
+    container:
+      image: jorgesolebur/salesforce-ci:latest
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v3
+        with:
+          ref: "r1-sit"
+          fetch-depth: "1"
+
+      # Replaces placeholders in the metadata with the value from the property file for the right environment
+      - name: Replaces placeholder in the files with the property files from the right environment
+        run: |
+          ant prepare -Dsf.env=SIT
+
+      #Authentication to Target org
+      - name: Write the token into a file and authenticate to Target Org
+        run: |
+          export HOME=/root
+          echo ${{ secrets.SIT }} > sit.txt         
+          sf auth sfdxurl store -f sit.txt -a sitOrg -s
+
+      #Full deployment in target org with NO TEST RUN
+      - name: "Full Deployment into SIT"
+        continue-on-error: true
+        run: |
+          export HOME=/root
+          sf project deploy start -d force-app/main/default -l NoTestRun -w 100 -o sitOrg --json >> fullDeploymentResult.json
+
+      #Creates a record in Tracker with details of the Deployment
+      - name: Create a Summary Test Run Results record in Tracker
+        run: |
+          export HOME=/root
+          echo ${{ secrets.TRACKER }} > tracker.txt         
+          sf auth sfdxurl store -f tracker.txt -a trackerOrg
+          sf data create record -v "$(echo "TR_Deployment_ID__c=")$(jq '.result.id' fullDeploymentResult.json) $(echo "TR_Done__c=")$(jq '.result.done' fullDeploymentResult.json) $(echo "TR_Number_of_components_Deployed__c=")$(jq '.result.numberComponentsDeployed' fullDeploymentResult.json) $(echo "TR_Number_of_Components_Error__c=")$(jq '.result.numberComponentErrors' fullDeploymentResult.json) $(echo "TR_Success__c=")$(jq '.result.success' fullDeploymentResult.json) $(echo "TR_Total_Number_of_Components__c=")$(jq '.result.numberComponentsTotal' fullDeploymentResult.json) $(echo "TR_Failed_Components__c='")$(jq '.result.details.componentFailures[]' fullDeploymentResult.json | sed 's/"//g' )' $(echo "TR_Org_ID__c='00D860000003lgjEAA'")" -s TR_Full_Deployment_Run_Result__c -o trackerOrg
+          if [ jq '.result.success' fullDeploymentResult.json == "false" ]; then
+            echo "Deployment Failed"
+            exit 1
+          fi
+
+      - name: Upload artifacts
+        if:  success() || failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SIT Deployment Logs
+          path: |
+            ./fullDeploymentResult.json
+          if-no-files-found: ignore
+          retention-days: 3
+          compression-level: 6
+
+  RUN_ALL_LOCAL_TESTS_IN_SIT:
+    if: ${{ false }}
+    needs: [FULL_DEPLOYMENT_IN_SIT]
+    environment: SIT
+    runs-on: ubuntu-latest
+    container:
+      image: jorgesolebur/salesforce-ci:latest
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v3
+
+      #Authentication to Target org
+      - name: Write the token into a file and authenticate to Target Org
+        run: |
+          export HOME=/root
+          echo ${{ secrets.SIT }} > sit.txt         
+          sf auth sfdxurl store -f sit.txt -a sitOrg -s
+
+      #Run all local test in target sandbox
+      - name: Run all local test in target sandbox
+        continue-on-error: true
+        run: |
+          export HOME=/root
+          sf apex run test --json -r json -l RunLocalTests --code-coverage -w 60 -o sitOrg >> result.json
+
+      #Creates a record in Tracker with details of the test class ran
+      - name: Create a Summary Test Run Results record in Tracker
+        run: |
+          export HOME=/root
+          echo ${{ secrets.TRACKER }} > tracker.txt         
+          sf auth sfdxurl store -f tracker.txt -a trackerOrg
+          sf data create record -v "$(echo "TR_Total_Lines__c=")$(jq '.result.coverage.summary.totalLines' result.json) $(echo "TR_Covered_Lines__c=")$(jq '.result.coverage.summary.coveredLines' result.json) $(echo "TR_Org_Wide_Coverage__c=")$(jq '.result.coverage.summary.orgWideCoverage' result.json | tr -d %) $(echo "TR_Test_Run_Coverage__c=")$(jq '.result.coverage.summary.testRunCoverage' result.json | tr -d %) $(echo "TR_Outcome__c=")$(jq '.result.summary.outcome' result.json) $(echo "TR_Tests_Ran__c=")$(jq '.result.summary.testsRan' result.json) $(echo "TR_Passing_Tests__c=")$(jq '.result.summary.passing' result.json) $(echo "TR_Failing_Tests__c=")$(jq '.result.summary.failing' result.json) $(echo "TR_Skipped_Tests__c=")$(jq '.result.summary.skipped' result.json) $(echo "TR_Test_Execution_Time__c=")$(jq '.result.summary.testExecutionTime' result.json | tr -d ' ms') $(echo "TR_Org_ID__c=")$(jq '.result.summary.orgId' result.json) $(echo "TR_Failed_Test_Classes__c='")$(jq '.result.tests[] | select(.Outcome == "Fail")' result.json | sed 's/"//g' )' " -s TR_Apex_Test_Run_Result__c -o trackerOrg
+          if [ jq '.result.summary.outcome' result.json == "Failed" ]; then
+            echo "Apex Test Execution Failed"
+            exit 1
+          fi
+
+  # This workflow contains a single job called "build"
+  DELTA_DATA_DEPLOYMENT_IN_SIT:
+    # The type of runner that the job will run on
+    needs: [FULL_DEPLOYMENT_IN_SIT]
+    runs-on: ubuntu-latest
+    container:
+      image: jorgesolebur/salesforce-ci:latest
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v3
+        with:
+          ref: "r1-sit"
+          fetch-depth: "1"
+
+      #Authentication to QA
+      - name: Write the token into a file and authenticate to Target Org
+        run: |
+          export HOME=/root
+          echo ${{ secrets.SIT }} > token.txt         
+          sf auth sfdxurl store -f token.txt -a myOrg -s
+
+      #PRE Deployment Steps
+      - name: PRE Deployment Step before simulating Data Import
+        run: |
+          export HOME=/root
+          sf project deploy start -d ./deploymentSteps/preDataKpiDef/ -o myOrg
+
+      #SFDMU RUN
+      - name: Run Data Import SIMULATION. No data will be imported in target. This step will fail if there are missing dependencies
+        run: |
+          export HOME=/root
+          echo 'n' | sf sfdmu run -s csvfile -u myOrg -p ./scripts/sfdmu/metaDevToRepo/ --simulation
+          sleep 4
+          if [ -s ./scripts/sfdmu/metaDevToRepo/CSVIssuesReport.csv ]; then
+            echo "There are issues while executing the simulation. Check CSVIssuesReport.csv in the Artifacts section"
+            exit 1
+          fi
+          if [ -s ./scripts/sfdmu/metaDevToRepo/MissingParentRecordsReport.csv ]; then
+            echo "There are issues while executing the simulation. Check MissingParentRecordsReport.csv in the Artifacts section"
+            exit 1
+          fi
+
+      #POST Deployment Steps
+      - name: POST Deployment Step before simulating Data Import
+        if:  success() || failure()
+        run: |
+          export HOME=/root
+          sf project deploy start -d ./deploymentSteps/postDataKpiDef/ -o myOrg
+
+      - name: Upload artifacts
+        if:  success() || failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SIT SFDMU Logs
+          path: |
+            ./scripts/sfdmu/metaDevToRepo/CSVIssuesReport.csv
+            ./scripts/sfdmu/metaDevToRepo/MissingParentRecordsReport.csv
+            ./scripts/sfdmu/metaDevToRepo/target/
+          if-no-files-found: ignore
+          retention-days: 3
+          compression-level: 6
+
+  FULL_DEPLOYMENT_IN_UAT:
+    if: ${{ false }}
+    environment: UAT
+    runs-on: ubuntu-latest
+    container:
+      image: jorgesolebur/salesforce-ci:latest
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v3
+        with:
+          ref: "r1-uat"
+          fetch-depth: "1"
+
+      # Replaces placeholders in the metadata with the value from the property file for the right environment
+      - name: Replaces placeholder in the files with the property files from the right environment
+        run: |
+          ant prepare -Dsf.env=UAT
+
+      #Authentication to Target org
+      - name: Write the token into a file and authenticate to Target Org
+        run: |
+          export HOME=/root
+          echo ${{ secrets.UAT }} > uat.txt         
+          sf auth sfdxurl store -f uat.txt -a uatOrg -s
+
+      #Full deployment in target org with NO TEST RUN
+      - name: "Full Deployment into UAT"
+        continue-on-error: true
+        run: |
+          export HOME=/root
+          sf project deploy start -d force-app/main/default -l NoTestRun -w 100 -o uatOrg --json >> fullDeploymentResult.json
+
+      #Creates a record in Tracker with details of the Deployment
+      - name: Create a Summary Test Run Results record in Tracker
+        run: |
+          export HOME=/root
+          echo ${{ secrets.TRACKER }} > tracker.txt         
+          sf auth sfdxurl store -f tracker.txt -a trackerOrg
+          sf data create record -v "$(echo "TR_Deployment_ID__c=")$(jq '.result.id' fullDeploymentResult.json) $(echo "TR_Done__c=")$(jq '.result.done' fullDeploymentResult.json) $(echo "TR_Number_of_components_Deployed__c=")$(jq '.result.numberComponentsDeployed' fullDeploymentResult.json) $(echo "TR_Number_of_Components_Error__c=")$(jq '.result.numberComponentErrors' fullDeploymentResult.json) $(echo "TR_Success__c=")$(jq '.result.success' fullDeploymentResult.json) $(echo "TR_Total_Number_of_Components__c=")$(jq '.result.numberComponentsTotal' fullDeploymentResult.json) $(echo "TR_Failed_Components__c='")$(jq '.result.details.componentFailures[]' fullDeploymentResult.json | sed 's/"//g' )' $(echo "TR_Org_ID__c='00D860000003liLEAQ'")" -s TR_Full_Deployment_Run_Result__c -o trackerOrg
+          if [ jq '.result.success' fullDeploymentResult.json == "false" ]; then
+            echo "Deployment Failed"
+            exit 1
+          fi
+
+      - name: Upload artifacts
+        if:  success() || failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: UAT Deployment Logs
+          path: |
+            ./fullDeploymentResult.json
+          if-no-files-found: ignore
+          retention-days: 3
+          compression-level: 6
+
+  RUN_ALL_LOCAL_TESTS_IN_UAT:
+    if: ${{ false }}
+    needs: [FULL_DEPLOYMENT_IN_UAT]
+    environment: UAT
+    runs-on: ubuntu-latest
+    container:
+      image: jorgesolebur/salesforce-ci:latest
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v3
+
+      #Authentication to Target org
+      - name: Write the token into a file and authenticate to Target Org
+        run: |
+          export HOME=/root
+          echo ${{ secrets.UAT_TEST_CLASS }} > uat.txt         
+          sf auth sfdxurl store -f uat.txt -a uatOrg -s
+
+      #Run all local test in target sandbox
+      - name: Run all local test in target sandbox
+        continue-on-error: true
+        run: |
+          export HOME=/root
+          sf apex run test --json -r json -l RunLocalTests --code-coverage -w 60 -o uatOrg >> result.json
+
+      #Creates a record in Tracker with details of the test class ran
+      - name: Create a Summary Test Run Results record in Tracker
+        run: |
+          export HOME=/root
+          echo ${{ secrets.TRACKER }} > tracker.txt         
+          sf auth sfdxurl store -f tracker.txt -a trackerOrg
+          sf data create record -v "$(echo "TR_Total_Lines__c=")$(jq '.result.coverage.summary.totalLines' result.json) $(echo "TR_Covered_Lines__c=")$(jq '.result.coverage.summary.coveredLines' result.json) $(echo "TR_Org_Wide_Coverage__c=")$(jq '.result.coverage.summary.orgWideCoverage' result.json | tr -d %) $(echo "TR_Test_Run_Coverage__c=")$(jq '.result.coverage.summary.testRunCoverage' result.json | tr -d %) $(echo "TR_Outcome__c=")$(jq '.result.summary.outcome' result.json) $(echo "TR_Tests_Ran__c=")$(jq '.result.summary.testsRan' result.json) $(echo "TR_Passing_Tests__c=")$(jq '.result.summary.passing' result.json) $(echo "TR_Failing_Tests__c=")$(jq '.result.summary.failing' result.json) $(echo "TR_Skipped_Tests__c=")$(jq '.result.summary.skipped' result.json) $(echo "TR_Test_Execution_Time__c=")$(jq '.result.summary.testExecutionTime' result.json | tr -d ' ms') $(echo "TR_Org_ID__c=")$(jq '.result.summary.orgId' result.json) $(echo "TR_Failed_Test_Classes__c='")$(jq '.result.tests[] | select(.Outcome == "Fail")' result.json | sed 's/"//g' )' " -s TR_Apex_Test_Run_Result__c -o trackerOrg
+          if [ jq '.result.summary.outcome' result.json == "Failed" ]; then
+            echo "Apex Test Execution Failed"
+            exit 1
+          fi
+
+  # This workflow contains a single job called "build"
+  DELTA_DATA_DEPLOYMENT_IN_UAT:
+    # The type of runner that the job will run on
+    needs: [FULL_DEPLOYMENT_IN_UAT]
+    runs-on: ubuntu-latest
+    container:
+      image: jorgesolebur/salesforce-ci:latest
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v3
+        with:
+          ref: "r1-uat"
+          fetch-depth: "1"
+
+      #Authentication to QA
+      - name: Write the token into a file and authenticate to Target Org
+        run: |
+          export HOME=/root
+          echo ${{ secrets.UAT }} > token.txt         
+          sf auth sfdxurl store -f token.txt -a myOrg -s
+
+      #PRE Deployment Steps
+      - name: PRE Deployment Step before simulating Data Import
+        run: |
+          export HOME=/root
+          sf project deploy start -d ./deploymentSteps/preDataKpiDef/ -o myOrg
+
+      #SFDMU RUN
+      - name: Run Data Import SIMULATION. No data will be imported in target. This step will fail if there are missing dependencies
+        run: |
+          export HOME=/root
+          echo 'n' | sf sfdmu run -s csvfile -u myOrg -p ./scripts/sfdmu/metaDevToRepo/ --simulation
+          sleep 4
+          if [ -s ./scripts/sfdmu/metaDevToRepo/CSVIssuesReport.csv ]; then
+            echo "There are issues while executing the simulation. Check CSVIssuesReport.csv in the Artifacts section"
+            exit 1
+          fi
+          if [ -s ./scripts/sfdmu/metaDevToRepo/MissingParentRecordsReport.csv ]; then
+            echo "There are issues while executing the simulation. Check MissingParentRecordsReport.csv in the Artifacts section"
+            exit 1
+          fi
+
+      #POST Deployment Steps
+      - name: POST Deployment Step before simulating Data Import
+        if:  success() || failure()
+        run: |
+          export HOME=/root
+          sf project deploy start -d ./deploymentSteps/postDataKpiDef/ -o myOrg
+
+      - name: Upload artifacts
+        if:  success() || failure()
+        uses: UAT actions/upload-artifact@v4
+        with:
+          name: SFDMU Logs
+          path: |
+            ./scripts/sfdmu/metaDevToRepo/CSVIssuesReport.csv
+            ./scripts/sfdmu/metaDevToRepo/MissingParentRecordsReport.csv
+            ./scripts/sfdmu/metaDevToRepo/target/
+          if-no-files-found: ignore
+          retention-days: 3
+          compression-level: 6
+
+  FULL_DEPLOYMENT_IN_PREPROD:
+    if: ${{ false }}
+    environment: PREPROD
+    runs-on: ubuntu-latest
+    container:
+      image: jorgesolebur/salesforce-ci:latest
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v3
+        with:
+          ref: "r1-preprod"
+          fetch-depth: "1"
+
+      # Replaces placeholders in the metadata with the value from the property file for the right environment
+      - name: Replaces placeholder in the files with the property files from the right environment
+        run: |
+          ant prepare -Dsf.env=PREPROD
+
+      #Authentication to Target org
+      - name: Write the token into a file and authenticate to Target Org
+        run: |
+          export HOME=/root
+          echo ${{ secrets.PREPROD }} > preprod.txt         
+          sf auth sfdxurl store -f preprod.txt -a preprodOrg -s
+
+      #Full deployment in target org with NO TEST RUN
+      - name: "Full Deployment into PREPROD"
+        continue-on-error: true
+        run: |
+          export HOME=/root
+          sf project deploy start -d force-app/main/default -l NoTestRun -w 100 -o preprodOrg --json >> fullDeploymentResult.json
+
+      #Creates a record in Tracker with details of the Deployment
+      - name: Create a Summary Test Run Results record in Tracker
+        run: |
+          export HOME=/root
+          echo ${{ secrets.TRACKER }} > tracker.txt         
+          sf auth sfdxurl store -f tracker.txt -a trackerOrg
+          sf data create record -v "$(echo "TR_Deployment_ID__c=")$(jq '.result.id' fullDeploymentResult.json) $(echo "TR_Done__c=")$(jq '.result.done' fullDeploymentResult.json) $(echo "TR_Number_of_components_Deployed__c=")$(jq '.result.numberComponentsDeployed' fullDeploymentResult.json) $(echo "TR_Number_of_Components_Error__c=")$(jq '.result.numberComponentErrors' fullDeploymentResult.json) $(echo "TR_Success__c=")$(jq '.result.success' fullDeploymentResult.json) $(echo "TR_Total_Number_of_Components__c=")$(jq '.result.numberComponentsTotal' fullDeploymentResult.json) $(echo "TR_Failed_Components__c='")$(jq '.result.details.componentFailures[]' fullDeploymentResult.json | sed 's/"//g' )' $(echo "TR_Org_ID__c='00D860000005681EAA'")" -s TR_Full_Deployment_Run_Result__c -o trackerOrg
+          if [ jq '.result.success' fullDeploymentResult.json == "false" ]; then
+            echo "Deployment Failed"
+            exit 1
+          fi
+
+      - name: Upload artifacts
+        if:  success() || failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: PREPROD Deployment Logs
+          path: |
+            ./fullDeploymentResult.json
+          if-no-files-found: ignore
+          retention-days: 3
+          compression-level: 6
+
+  RUN_ALL_LOCAL_TESTS_IN_PREPROD:
+    if: ${{ false }}
+    needs: [FULL_DEPLOYMENT_IN_PREPROD]
+    environment: PREPROD
+    runs-on: ubuntu-latest
+    container:
+      image: jorgesolebur/salesforce-ci:latest
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v3
+
+      #Authentication to Target org
+      - name: Write the token into a file and authenticate to Target Org
+        run: |
+          export HOME=/root
+          echo ${{ secrets.PREPROD }} > preprod.txt         
+          sf auth sfdxurl store -f preprod.txt -a preprodOrg -s
+
+      #Run all local test in target sandbox
+      - name: Run all local test in target sandbox
+        continue-on-error: true
+        run: |
+          export HOME=/root
+          sf apex run test --json -r json -l RunLocalTests --code-coverage -w 60 -o preprodOrg >> result.json
+
+      #Creates a record in Tracker with details of the test class ran
+      - name: Create a Summary Test Run Results record in Tracker
+        run: |
+          export HOME=/root
+          echo ${{ secrets.TRACKER }} > tracker.txt         
+          sf auth sfdxurl store -f tracker.txt -a trackerOrg
+          sf data create record -v "$(echo "TR_Total_Lines__c=")$(jq '.result.coverage.summary.totalLines' result.json) $(echo "TR_Covered_Lines__c=")$(jq '.result.coverage.summary.coveredLines' result.json) $(echo "TR_Org_Wide_Coverage__c=")$(jq '.result.coverage.summary.orgWideCoverage' result.json | tr -d %) $(echo "TR_Test_Run_Coverage__c=")$(jq '.result.coverage.summary.testRunCoverage' result.json | tr -d %) $(echo "TR_Outcome__c=")$(jq '.result.summary.outcome' result.json) $(echo "TR_Tests_Ran__c=")$(jq '.result.summary.testsRan' result.json) $(echo "TR_Passing_Tests__c=")$(jq '.result.summary.passing' result.json) $(echo "TR_Failing_Tests__c=")$(jq '.result.summary.failing' result.json) $(echo "TR_Skipped_Tests__c=")$(jq '.result.summary.skipped' result.json) $(echo "TR_Test_Execution_Time__c=")$(jq '.result.summary.testExecutionTime' result.json | tr -d ' ms') $(echo "TR_Org_ID__c=")$(jq '.result.summary.orgId' result.json) $(echo "TR_Failed_Test_Classes__c='")$(jq '.result.tests[] | select(.Outcome == "Fail")' result.json | sed 's/"//g' )' " -s TR_Apex_Test_Run_Result__c -o trackerOrg
+          if [ jq '.result.summary.outcome' result.json == "Failed" ]; then
+            echo "Apex Test Execution Failed"
+            exit 1
+          fi
+
+  # This workflow contains a single job called "build"
+  DELTA_DATA_DEPLOYMENT_IN_PREPROD:
+    # The type of runner that the job will run on
+    needs: [FULL_DEPLOYMENT_IN_PREPROD]
+    runs-on: ubuntu-latest
+    container:
+      image: jorgesolebur/salesforce-ci:latest
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v3
+        with:
+          ref: "r1-preprod"
+          fetch-depth: "1"
+
+      #Authentication to QA
+      - name: Write the token into a file and authenticate to Target Org
+        run: |
+          export HOME=/root
+          echo ${{ secrets.PREPROD }} > token.txt         
+          sf auth sfdxurl store -f token.txt -a myOrg -s
+
+      #PRE Deployment Steps
+      - name: PRE Deployment Step before simulating Data Import
+        run: |
+          export HOME=/root
+          sf project deploy start -d ./deploymentSteps/preDataKpiDef/ -o myOrg
+
+      #SFDMU RUN
+      - name: Run Data Import SIMULATION. No data will be imported in target. This step will fail if there are missing dependencies
+        run: |
+          export HOME=/root
+          echo 'n' | sf sfdmu run -s csvfile -u myOrg -p ./scripts/sfdmu/metaDevToRepo/ --simulation
+          sleep 4
+          if [ -s ./scripts/sfdmu/metaDevToRepo/CSVIssuesReport.csv ]; then
+            echo "There are issues while executing the simulation. Check CSVIssuesReport.csv in the Artifacts section"
+            exit 1
+          fi
+          if [ -s ./scripts/sfdmu/metaDevToRepo/MissingParentRecordsReport.csv ]; then
+            echo "There are issues while executing the simulation. Check MissingParentRecordsReport.csv in the Artifacts section"
+            exit 1
+          fi
+
+      #POST Deployment Steps
+      - name: POST Deployment Step before simulating Data Import
+        if:  success() || failure()
+        run: |
+          export HOME=/root
+          sf project deploy start -d ./deploymentSteps/postDataKpiDef/ -o myOrg
+
+      - name: Upload artifacts
+        if:  success() || failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: PREPROD SFDMU Logs
+          path: |
+            ./scripts/sfdmu/metaDevToRepo/CSVIssuesReport.csv
+            ./scripts/sfdmu/metaDevToRepo/MissingParentRecordsReport.csv
+            ./scripts/sfdmu/metaDevToRepo/target/
+          if-no-files-found: ignore
+          retention-days: 3
+          compression-level: 6
+
+  TEST_SCRATCH_ORG_CREATION:
+    if: ${{ false }}
+    needs: [FULL_DEPLOYMENT_IN_QA]
+    environment: QA
+    runs-on: ubuntu-latest
+    container:
+      image: jorgesolebur/salesforce-ci:latest
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v3
+        with:
+          ref: "develop"
+          fetch-depth: "1"
+
+      #Authentication to DEV HUB
+      - name: Write the token into a file and authenticate to Target Org
+        run: |
+          export HOME=/root
+          echo ${{ secrets.DEVHUB }} > devhub.txt         
+          sf auth sfdxurl store -f devhub.txt -a devhub -s
+          sf config set target-dev-hub=devhub
+
+      #Creates a scratch org to test the creation with authentication to DEV HUB and cleaning existing scratch orgs
+      - name: Creates a scratch org to simulate full deployment and fix any potential issue
+        continue-on-error: true
+        run: |
+          export HOME=/root
+          pwsh ./scripts/powershell/createnewscratchorg.ps1 -targetOrg orgTest -withPackages 1 -loadDataOption 0 -automated 1
+
+      #Deleting scratch org
+      - name: Deleting any potential sratch org created with the same name
+        continue-on-error: true
+        run: |
+          export HOME=/root
+          sf org delete scratch --target-org orgTest --no-prompt
