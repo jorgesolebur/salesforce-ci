@@ -27,16 +27,8 @@ RUN mkdir ~/node-latest-install && cd $_ && \
     apt-get update -y && \
     apt-get upgrade -y && \
     apt-get install -y && \
-    curl -sL https://deb.nodesource.com/setup_14.x | bash - && \
+    curl -sL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y nodejs
-
-# Install PowerShell and their dependencies
-RUN apt-get install -y wget apt-transport-https software-properties-common && \
-    wget -q https://packages.microsoft.com/config/ubuntu/20.04/packages-microsoft-prod.deb && \
-    dpkg -i packages-microsoft-prod.deb && \
-    apt-get update && \
-    apt-get install -y powershell && \
-    rm -f packages-microsoft-prod.deb
 
 # Install NPM
 RUN apt-get update && apt-get install -y \
@@ -47,6 +39,14 @@ RUN npm install npm@latest -g && \
     n latest
 RUN node -v && \
     npm -v
+
+# Install PowerShell and their dependencies
+RUN apt-get install -y wget apt-transport-https software-properties-common && \
+wget -q https://packages.microsoft.com/config/ubuntu/20.04/packages-microsoft-prod.deb && \
+dpkg -i packages-microsoft-prod.deb && \
+apt-get update && \
+apt-get install -y powershell && \
+rm -f packages-microsoft-prod.deb
 
 # Install eslint dependencies
 WORKDIR /usr/app
@@ -66,13 +66,14 @@ RUN export PATH="$PATH:/usr/app/npm-global/bin" && \
     echo 'y' | sf plugins install sfdx-git-delta && \
     echo 'y' | sf plugins install lightning-flow-scanner && \
     echo 'y' | sf plugins install sfdmu && \
+    #echo 'y' | sf plugins install @ind-rcg/modeler-sfdx-cli-plugin && \ (unsupported for Linux)
     sf --version
 
-# Install PMD. Get link for newer version from https://github.com/pmd/pmd/releases
-WORKDIR /usr/app
-RUN wget https://github.com/pmd/pmd/releases/download/pmd_releases%2F7.0.0-rc4/pmd-dist-7.0.0-rc4-bin.zip && \
-    unzip pmd-dist-7.0.0-rc4-bin.zip && \
-    rm -f pmd-dist-7.0.0-rc4-bin.zip
+# Install PMD (not required because we use sf scanner instead). Get link for newer version from https://github.com/pmd/pmd/releases
+#WORKDIR /usr/app
+#RUN wget https://github.com/pmd/pmd/releases/download/pmd_releases%2F7.0.0-rc4/pmd-dist-7.0.0-rc4-bin.zip && \
+#    unzip pmd-dist-7.0.0-rc4-bin.zip && \
+#    rm -f pmd-dist-7.0.0-rc4-bin.zip
 
 #Changing root password so we can execute sudo later
 RUN echo 'root:Docker!' | chpasswd
